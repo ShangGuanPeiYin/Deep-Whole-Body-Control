@@ -75,7 +75,7 @@ dwbc-isaaclab/
 动作维度固定为 18，顺序固定如下：
 
 ```text
-FL hip/thigh/calf, FR hip/thigh/calf, RL hip/thigh/calf, RR hip/thigh/calf,
+FR hip/thigh/calf, FL hip/thigh/calf, RR hip/thigh/calf, RL hip/thigh/calf,
 widow_waist, widow_shoulder, widow_elbow, widow_forearm_roll,
 widow_wrist_angle, widow_wrist_rotate
 ```
