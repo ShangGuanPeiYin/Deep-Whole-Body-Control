@@ -5,6 +5,7 @@ from dwbc_isaaclab.tasks.widow_go1.contracts import (
     POLICY_ACTION_NAMES,
     ROBOT_JOINT_NAMES,
     build_name_index,
+    canonicalize_body_name,
     validate_joint_names,
 )
 
@@ -39,3 +40,8 @@ def test_name_validation_rejects_duplicates_and_missing_names():
         build_name_index(("FR_hip_joint", "FR_hip_joint"))
     with pytest.raises(ValueError, match="missing=.*widow_elbow"):
         validate_joint_names(("FR_hip_joint",), ("FR_hip_joint", "widow_elbow"))
+
+
+def test_usd_sanitized_arm_body_name_maps_to_legacy_semantics():
+    assert canonicalize_body_name("wx250s_ee_gripper_link") == "wx250s/ee_gripper_link"
+    assert canonicalize_body_name("FR_foot") == "FR_foot"

@@ -1,0 +1,1 @@
+"""Deterministic asset import configuration."""

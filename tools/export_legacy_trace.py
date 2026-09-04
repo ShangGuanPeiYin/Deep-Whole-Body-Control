@@ -64,7 +64,7 @@ def _legacy_args(gymapi, scenario: dict) -> SimpleNamespace:
     )
 
 
-def record_trace(legacy_root: Path, scenario: dict, seed: int, action_path: Path) -> dict[str, np.ndarray]:
+def make_legacy_env(legacy_root: Path, scenario: dict, seed: int, *, disable_randomization: bool = False):
     sys.path.insert(0, str(legacy_root / "legged_gym"))
     sys.path.insert(0, str(legacy_root / "rsl_rl"))
     from isaacgym import gymapi  # imported before torch as required by Isaac Gym
@@ -74,9 +74,22 @@ def record_trace(legacy_root: Path, scenario: dict, seed: int, action_path: Path
     env_cfg, _ = task_registry.get_cfgs(scenario["task"])
     env_cfg.env.num_envs = int(scenario["num_envs"])
     env_cfg.seed = seed
+    if disable_randomization:
+        for name in (
+            "randomize_friction", "randomize_base_mass", "randomize_base_com",
+            "randomize_motor", "randomize_gripper_mass", "push_robots",
+        ):
+            if hasattr(env_cfg.domain_rand, name):
+                setattr(env_cfg.domain_rand, name, False)
     env, _ = task_registry.make_env(
         name=scenario["task"], args=_legacy_args(gymapi, scenario), env_cfg=env_cfg
     )
+    return env
+
+
+def record_trace(legacy_root: Path, scenario: dict, seed: int, action_path: Path) -> dict[str, np.ndarray]:
+    env = make_legacy_env(legacy_root, scenario, seed)
+    import torch
     action_script = np.load(action_path)["actions"]
     if action_script.shape != (int(scenario["steps"]), 18):
         raise ValueError(f"action script must have shape {(scenario['steps'], 18)}, got {action_script.shape}")

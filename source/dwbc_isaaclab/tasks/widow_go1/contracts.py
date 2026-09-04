@@ -21,6 +21,12 @@ POLICY_ACTION_NAMES = LEG_JOINT_NAMES + ARM_JOINT_NAMES
 ROBOT_JOINT_NAMES = POLICY_ACTION_NAMES + GRIPPER_JOINT_NAMES
 
 
+def canonicalize_body_name(name: str) -> str:
+    if name.startswith("wx250s_"):
+        return "wx250s/" + name[len("wx250s_"):]
+    return name
+
+
 @dataclass(frozen=True)
 class ObservationLayout:
     proprio: ClassVar[int] = 76
