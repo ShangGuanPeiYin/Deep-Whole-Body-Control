@@ -1,0 +1,7 @@
+.worktrees/
+.superpowers/
+.claude_resources.json
+artifacts/
+__pycache__/
+.pytest_cache/
+*.egg-info/
