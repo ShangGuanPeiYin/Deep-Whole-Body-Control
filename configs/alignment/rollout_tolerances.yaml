@@ -1,0 +1,14 @@
+{
+  "rationale": "Frozen before the first Isaac Lab candidate trace. Cross-PhysX thresholds constrain a 0.8 s open-loop smoke rollout; discrete actions and terminations remain exact.",
+  "fields": {
+    "obs": {"atol": 2.0, "rtol": 0.25},
+    "actions": {"atol": 0.0, "rtol": 0.0},
+    "leg_reward": {"atol": 0.01, "rtol": 0.25},
+    "arm_reward": {"atol": 0.01, "rtol": 0.25},
+    "dones": {"atol": 0.0, "rtol": 0.0},
+    "root_state": {"atol": 0.25, "rtol": 0.20},
+    "dof_pos": {"atol": 0.30, "rtol": 0.20},
+    "dof_vel": {"atol": 5.0, "rtol": 0.30},
+    "ee_state": {"atol": 0.30, "rtol": 0.20}
+  }
+}
