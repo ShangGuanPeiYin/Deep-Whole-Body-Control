@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dwbc-isaaclab"
+version = "0.1.0"
+description = "Deep Whole-Body Control migration for Isaac Lab"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7.4,<9"]
+
+[tool.setuptools]
+package-dir = {"" = "source"}
+
+[tool.setuptools.packages.find]
+where = ["source"]
+include = ["dwbc_isaaclab*", "dwbc_rsl_rl*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["source"]
+testpaths = ["tests"]
+markers = ["isaaclab: requires Isaac Lab and a working simulation runtime"]
