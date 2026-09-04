@@ -19,7 +19,7 @@
 
 运行栈固定为：Isaac Lab 负责任务和训练接口，Isaac Sim 负责 USD 资产、运行时和可视化，PhysX 负责刚体、关节、碰撞和接触动力学。训练算法保持为项目自有包，通过适配层连接 Isaac Lab 环境；不得直接修改 Isaac Lab 或上游 RSL-RL 的源代码。
 
-新仓库初期需固定 Isaac Lab 版本、Isaac Sim 版本、Python 版本和 RSL-RL 兼容版本，并将精确版本写入安装文档和锁定文件。旧项目的 Conda 环境 `dwbc` 仅用于导出基线轨迹和运行旧版对照，不作为新 Isaac Lab 环境的依赖约束。
+迁移基线固定为稳定版 Isaac Lab 2.3.2、Isaac Sim 5.1.0.0、Python 3.11.15，并使用现有 Conda 环境 `isaac-lab`。精确的 PyTorch、驱动和 GPU 版本写入环境锁定文件。旧项目的 Conda 环境 `dwbc` 仅用于导出基线轨迹和运行旧版对照。
 
 ## Repository Layout
 

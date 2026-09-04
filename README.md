@@ -5,9 +5,9 @@ This repository migrates the WidowGo1 task to Isaac Lab while preserving the pro
 ## Environments
 
 - `dwbc`: legacy Isaac Gym baseline export only.
-- `dwbc-lab`: Isaac Lab 3.0.0 development, tests and training.
+- `isaac-lab`: Isaac Lab 2.3.2 development, tests and training.
 
-Create the project environment with `conda env create -f environment.yml`, activate it with `conda activate dwbc-lab`, install Isaac Lab 3.0.0 into that environment following its source installation script, then run `python -m pip install -e '.[test]'` here. Do not upgrade the existing `/home/xxs/research/IsaacLab` v2.3.2 checkout in place.
+The validated installation is `/home/xxs/research/IsaacLab` at tag `v2.3.2`. Activate it with `conda activate isaac-lab`, then run `python -m pip install -e '.[test]'` here. `environment.yml` records the Python/test requirements for recreating the named environment; install Isaac Lab from its `v2.3.2` source checkout before running simulator tests.
 
 ## Verification entry points
 

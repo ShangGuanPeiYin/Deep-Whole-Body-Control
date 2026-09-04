@@ -6,14 +6,14 @@
 
 **Architecture:** Start with one Isaac Lab `DirectRLEnv`. A project-owned adapter converts Lab transitions to the legacy rollout protocol; the project-owned `dwbc_rsl_rl` package retains dual reward/value semantics. The old repository is an executable, read-only oracle and supplies deterministic traces.
 
-**Tech Stack:** Isaac Lab 3.0.0, Isaac Sim/PhysX, Python 3.12, PyTorch, USD, PyTest, TensorBoard.
+**Tech Stack:** Isaac Lab 2.3.2, Isaac Sim 5.1.0.0/PhysX, Python 3.11.15, PyTorch 2.7.0+cu128, USD, PyTest, TensorBoard.
 
 **Spec:** `docs/superpowers/specs/2026-09-04-dwbc-isaaclab-migration-design.md`
 
 ## Global Constraints
 
-- Use Conda environment `dwbc-lab` for new work; use `dwbc` only to export legacy reference traces.
-- Pin Isaac Lab 3.0.0 and record exact Isaac Sim/PyTorch/driver versions in `docs/environment-lock.md`.
+- Use the installed Conda environment `isaac-lab` for new work; use `dwbc` only to export legacy reference traces.
+- Pin Isaac Lab 2.3.2 and record exact Isaac Sim/PyTorch/driver versions in `docs/environment-lock.md`.
 - Never modify `../Deep-Whole-Body-Control` during migration.
 - Canonical policy action order is FR, FL, RR, RL (hip/thigh/calf each), followed by `widow_waist`, `widow_shoulder`, `widow_elbow`, `widow_forearm_roll`, `widow_wrist_angle`, `widow_wrist_rotate`.
 - Policy action width is 18; robot joint width is 20 including state-only grippers.
@@ -39,7 +39,7 @@
 - Create: `pyproject.toml`, `README.md`, `docs/environment-lock.md`, `docs/baseline-manifest.md`
 - Create: `source/dwbc_isaaclab/__init__.py`, `source/dwbc_rsl_rl/__init__.py`, `tests/test_project_layout.py`
 
-**Interfaces:** Produces editable packages `dwbc_isaaclab` and `dwbc_rsl_rl`; later tasks use the documented `dwbc-lab` commands.
+**Interfaces:** Produces editable packages `dwbc_isaaclab` and `dwbc_rsl_rl`; later tasks use the documented `isaac-lab` commands.
 
 - [ ] **Step 1: Write the failing layout test**
 
@@ -59,7 +59,7 @@ Expected: FAIL because `pyproject.toml` is absent.
 
 - [ ] **Step 3: Implement metadata and baseline records**
 
-Create setuptools metadata with `package-dir = {"" = "source"}` and `include = ["dwbc_isaaclab*", "dwbc_rsl_rl*"]`. README must specify `conda activate dwbc-lab`, `pip install -e .`, unit test, smoke, trace and training commands. Environment lock records exact Lab/Sim/Python/Torch/driver/GPU versions. Baseline manifest records old Git SHA, hashes of dirty legacy files/assets, `dwbc` package list, old WidowGo1 config, seeds 1/2/3, and the existing headless smoke command.
+Create setuptools metadata with `package-dir = {"" = "source"}` and `include = ["dwbc_isaaclab*", "dwbc_rsl_rl*"]`. README must specify `conda activate isaac-lab`, `pip install -e .`, unit test, smoke, trace and training commands. Environment lock records exact Lab/Sim/Python/Torch/driver/GPU versions. Baseline manifest records old Git SHA, hashes of dirty legacy files/assets, `dwbc` package list, old WidowGo1 config, seeds 1/2/3, and the existing headless smoke command.
 
 - [ ] **Step 4: Verify**
 
