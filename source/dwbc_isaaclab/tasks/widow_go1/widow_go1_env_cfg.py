@@ -124,9 +124,8 @@ class WidowGo1EnvCfg(DirectRLEnvCfg):
             horizontal_scale=0.025,
             vertical_scale=1.0e-5,
             slope_threshold=1.0e8,
-            # The exact 600x2000 field is generated first, then collision-mesh vertices are sampled
-            # every four cells to fit Isaac Sim 5.1 GPU mesh-cooking limits on an 8 GB RTX 3070 Ti.
-            sub_terrains={"legacy_perlin": LegacyPerlinTerrainCfg(mesh_stride=4)},
+            # Preserve the frozen legacy collision resolution for parity runs.
+            sub_terrains={"legacy_perlin": LegacyPerlinTerrainCfg(mesh_stride=1)},
             use_cache=False,
         ),
         use_terrain_origins=False,
@@ -145,6 +144,7 @@ class WidowGo1EnvCfg(DirectRLEnvCfg):
         spawn=sim_utils.UsdFileCfg(
             usd_path=str(ROBOT_USD),
             activate_contact_sensors=True,
+            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.01, rest_offset=0.0),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 linear_damping=0.0,

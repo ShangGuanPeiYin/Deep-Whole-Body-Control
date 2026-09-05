@@ -2,6 +2,8 @@
   "joint_limits": {"atol": 1e-6, "rtol": 1e-6},
   "mass": {"atol": 1e-6, "rtol": 1e-6},
   "inertia": {"atol": 1e-6, "rtol": 1e-6},
+  "inertia_tensor": {"atol": 1e-6, "rtol": 1e-6},
+  "center_of_mass": {"atol": 1e-6, "rtol": 1e-6},
   "stiffness": {"atol": 1e-6, "rtol": 1e-6},
   "damping": {"atol": 1e-6, "rtol": 1e-6},
   "effort_limit": {"atol": 1e-6, "rtol": 1e-6}

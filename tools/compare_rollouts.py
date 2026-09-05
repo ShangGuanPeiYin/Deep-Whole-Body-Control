@@ -50,6 +50,7 @@ def compare_metadata(reference: Mapping, candidate: Mapping) -> tuple[str, ...]:
     keys = (
         "schema_version", "task", "seed", "steps", "num_envs", "config_sha256",
         "action_sha256", "action_order", "joint_order", "tensor_shapes",
+        "initial_snapshot_sha256",
     )
     return tuple(f"metadata mismatch: {key}" for key in keys if reference.get(key) != candidate.get(key))
 

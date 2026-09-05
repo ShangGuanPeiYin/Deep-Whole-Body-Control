@@ -50,6 +50,9 @@ def main() -> int:
         body_property_row(name, prop.mass, (prop.inertia.x.x, prop.inertia.y.y, prop.inertia.z.z))
         for name, prop in zip(env.body_names, body_props)
     ]
+    for row, prop in zip(bodies, body_props):
+        row['inertia_tensor'] = [[getattr(getattr(prop.inertia,a),b) for b in 'xyz'] for a in 'xyz']
+        row['center_of_mass'] = [prop.com.x,prop.com.y,prop.com.z]
     collider_count = len(env.gym.get_actor_rigid_shape_properties(env_handle, actor_handle))
     report = build_asset_report(joints, bodies, collider_count)
     args.out.parent.mkdir(parents=True, exist_ok=True)

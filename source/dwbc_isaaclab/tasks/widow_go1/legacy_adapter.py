@@ -38,6 +38,9 @@ class LegacyRunnerAdapter:
         obs = policy_observation(observations)
         return obs, obs, infos
 
+    def update_command_curriculum(self):
+        self.env.update_command_curriculum()
+
     def step(self, actions):
         observations, leg_reward, terminated, truncated, infos = self.env.step(actions)
         obs = policy_observation(observations)
@@ -48,4 +51,3 @@ class LegacyRunnerAdapter:
         if "arm_reward" not in infos:
             raise KeyError("environment extras must contain arm_reward")
         return obs, obs, leg_reward, infos["arm_reward"], dones, infos
-

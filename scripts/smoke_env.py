@@ -12,6 +12,7 @@ parser.add_argument("--num-envs", type=int, default=1)
 parser.add_argument("--steps", type=int, default=40)
 parser.add_argument("--action-script", type=Path)
 parser.add_argument("--print-transition-keys", action="store_true")
+parser.add_argument("--torque-supervision", action="store_true")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 launcher = AppLauncher(args)
@@ -30,6 +31,7 @@ def main() -> int:
     cfg = WidowGo1EnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.sim.device = args.device
+    cfg.torque_supervision = args.torque_supervision
     env = WidowGo1Env(cfg)
     try:
         obs, _ = env.reset(seed=cfg.seed)
@@ -42,7 +44,14 @@ def main() -> int:
         transition = None
         for step in range(args.steps):
             actions = torch.as_tensor(action_rows[step], device=env.device).repeat(env.num_envs, 1)
+            initial_arm_pos = env._robot.data.joint_pos[:, env._all_joint_ids[12:18]].clone()
             transition = env.step(actions)
+            if args.torque_supervision:
+                info = transition[-1]
+                target = info["target_arm_torques"]
+                assert target.shape == (env.num_envs, 6)
+                assert torch.isfinite(target).all() and target.abs().max() > 0
+                torch.testing.assert_close(info["current_arm_dof_pos"], initial_arm_pos)
         assert transition is not None
         obs, rewards, terminated, truncated, extras = transition
         policy = obs["policy"]
@@ -57,6 +66,10 @@ def main() -> int:
         if args.print_transition_keys:
             print(f"extras={sorted(extras)}")
         return 0
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise
     finally:
         env.close()
         launcher.app.close()

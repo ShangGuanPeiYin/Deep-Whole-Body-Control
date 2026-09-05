@@ -89,14 +89,32 @@ def make_legacy_env(legacy_root: Path, scenario: dict, seed: int, *, disable_ran
 
 def record_trace(legacy_root: Path, scenario: dict, seed: int, action_path: Path) -> dict[str, np.ndarray]:
     env = make_legacy_env(legacy_root, scenario, seed)
+    if 'initial_snapshot' in scenario:
+        from initial_snapshot import capture_legacy
+        capture_legacy(env, PROJECT_ROOT / scenario['initial_snapshot'])
     import torch
+    foot_names = ("FR_foot", "FL_foot", "RR_foot", "RL_foot")
+    sensor_names = [env.body_names[index] for index in env.feet_indices]
+    sensor_order = [sensor_names.index(name) for name in foot_names]
+    foot_body_ids = [env.body_names.index(name) for name in foot_names]
+    sensor_diagnostic = {}
+    if scenario.get('sensor_diagnostic', False):
+        original_compute_torques = env._compute_torques
+        def diagnostic_compute_torques(actions):
+            env.gym.refresh_rigid_body_state_tensor(env.sim)
+            sensor_diagnostic['before'] = env.rigid_body_state[:, foot_body_ids].clone()
+            return original_compute_torques(actions)
+        env._compute_torques = diagnostic_compute_torques
     action_script = np.load(action_path)["actions"]
     if action_script.shape != (int(scenario["steps"]), 18):
         raise ValueError(f"action script must have shape {(scenario['steps'], 18)}, got {action_script.shape}")
     records: dict[str, list[np.ndarray]] = {name: [] for name in (
         "obs", "actions", "leg_reward", "arm_reward", "dones",
-        "root_state", "dof_pos", "dof_vel", "ee_state",
+        "root_state", "dof_pos", "dof_vel", "ee_state", "foot_wrench", "foot_contact_force",
     )}
+    if scenario.get('sensor_diagnostic', False):
+        records['foot_state'] = []
+        records['foot_state_before_last_substep'] = []
     for action_row in action_script:
         actions = torch.as_tensor(action_row, device=env.device).repeat(env.num_envs, 1)
         obs, _, leg_reward, arm_reward, dones, _ = env.step(actions)
@@ -110,7 +128,12 @@ def record_trace(legacy_root: Path, scenario: dict, seed: int, action_path: Path
             "dof_pos": env.ig2raisim(env.dof_pos),
             "dof_vel": env.ig2raisim(env.dof_vel),
             "ee_state": env.rigid_body_state[:, env.gripper_idx, :],
+            "foot_wrench": env.force_sensor_tensor[:, sensor_order],
+            "foot_contact_force": env.contact_forces[:, foot_body_ids],
         }
+        if scenario.get('sensor_diagnostic', False):
+            snapshots['foot_state'] = env.rigid_body_state[:, foot_body_ids]
+            snapshots['foot_state_before_last_substep'] = sensor_diagnostic['before']
         for name, tensor in snapshots.items():
             records[name].append(tensor.detach().cpu().numpy().copy())
     return {name: np.stack(values) for name, values in records.items()}
@@ -141,6 +164,8 @@ def main() -> int:
         hashlib.sha256(scenario_bytes).hexdigest(),
     )
     metadata["action_sha256"] = _sha256(action_path)
+    if 'initial_snapshot' in scenario:
+        metadata['initial_snapshot_sha256'] = _sha256(PROJECT_ROOT / scenario['initial_snapshot'])
     metadata["source_sha256"] = {
         str(path.relative_to(args.legacy_root)): _sha256(path)
         for path in (

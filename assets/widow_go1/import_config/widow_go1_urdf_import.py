@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import numpy as np
 from pathlib import Path
 
 
@@ -13,6 +14,7 @@ def importer_settings() -> dict[str, object]:
         "joint_drive_target_type": "none",
         "joint_stiffness": 0.0,
         "joint_damping": 0.0,
+        "replace_cylinders_with_capsules": True,
     }
 
 
@@ -43,7 +45,20 @@ def apply_legacy_mass_properties(usd_path: Path, contract_path: Path) -> None:
             continue
         mass_api = UsdPhysics.MassAPI.Apply(prim)
         mass_api.GetMassAttr().Set(float(contract["mass"][body_name]))
-        mass_api.GetDiagonalInertiaAttr().Set(Gf.Vec3f(*contract["diagonal_inertia"][body_name]))
+        if 'inertia_tensor' not in contract or 'center_of_mass' not in contract:
+            raise ValueError('full legacy inertia tensor and center of mass are required')
+        tensor = np.asarray(contract['inertia_tensor'][body_name], dtype=float)
+        tensor = (tensor + tensor.T) / 2
+        moments, axes = np.linalg.eigh(tensor)
+        if np.linalg.det(axes) < 0:
+            axes[:, 0] *= -1
+        if np.any(moments <= 0):
+            raise ValueError(f'nonpositive inertia for {body_name}')
+        # Gf matrices use row-vector rotations; eigenvectors are columns in NumPy.
+        quaternion = Gf.Matrix3d(*axes.T.flatten().tolist()).ExtractRotation().GetQuat()
+        mass_api.GetDiagonalInertiaAttr().Set(Gf.Vec3f(*moments.tolist()))
+        mass_api.GetPrincipalAxesAttr().Set(Gf.Quatf(quaternion))
+        mass_api.GetCenterOfMassAttr().Set(Gf.Vec3f(*contract['center_of_mass'][body_name]))
         matched.add(body_name)
     missing = sorted(set(contract["mass"]) - matched)
     if missing:
@@ -58,6 +73,7 @@ def main() -> int:
     default_input, default_output = default_asset_paths()
     parser.add_argument("--input", type=Path, default=default_input)
     parser.add_argument("--output", type=Path, default=default_output)
+    parser.add_argument('--mass-contract',type=Path,default=default_output.parents[1] / 'legacy_full_mass_properties.json')
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
     launcher = AppLauncher(args)
@@ -73,6 +89,7 @@ def main() -> int:
             fix_base=settings["fix_base"],
             merge_fixed_joints=settings["merge_fixed_joints"],
             force_usd_conversion=settings["force_usd_conversion"],
+            replace_cylinders_with_capsules=settings["replace_cylinders_with_capsules"],
             joint_drive=UrdfConverterCfg.JointDriveCfg(
                 gains=UrdfConverterCfg.JointDriveCfg.PDGainsCfg(
                     stiffness=settings["joint_stiffness"], damping=settings["joint_damping"]
@@ -83,10 +100,14 @@ def main() -> int:
         converter = UrdfConverter(cfg)
         if Path(converter.usd_path).resolve() != args.output.resolve():
             raise RuntimeError(f"converter wrote unexpected path: {converter.usd_path}")
-        contract_path = args.output.resolve().parents[1] / "legacy_mass_properties.json"
+        contract_path = args.mass_contract.resolve()
         apply_legacy_mass_properties(args.output.resolve(), contract_path)
         print(converter.usd_path)
         return 0
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise
     finally:
         app.close()
 

@@ -12,6 +12,40 @@
 
 ## Global Constraints
 
+### Execution correction, 2026-09-05
+
+The user authorized correcting the plan whenever evidence exposes a flaw. The
+following corrections supersede the initial verification assumptions:
+
+- A sandboxed `nvidia-smi` failure is not evidence of a driver crash. A read-only
+  host check succeeded; no reboot was needed. Full-resolution 600x2000 terrain
+  subsequently ran with 32 Isaac Lab environments. Keep `mesh_stride=1` for parity.
+- The original exporters do not share an initial-state procedure: the legacy
+  exporter starts directly after construction, whereas Lab explicitly resets.
+  Their independent random streams also differ. The seed-1 report is therefore a
+  useful failure diagnostic, not a valid matched-initial-state dynamics test.
+  Preserve that report; add an explicit shared snapshot and hash for Gate B/C.
+- Gate D must replay the same state through both task implementations. Compare
+  each reward term and termination reason, not only summed reward trajectories.
+- Gate E must use an independent legacy oracle. Candidate-only shape and loss
+  fixtures are insufficient. A network oracle now compares both encoding paths,
+  values, log probabilities, entropy and gradients with identical weights.
+  Full PPO/GAE/update parity remains a separate acceptance item.
+- Two iterations are needed for the minimal training integration test: iteration
+  zero performs DAgger; iteration one performs PPO. This test is permitted before
+  physics parity, but is never counted as parity training or Gate F evidence.
+- Gate F intervals must come from actual legacy three-seed training. The initial
+  unsubstantiated reward intervals have been removed; comparison fails closed
+  while the baseline is pending. Freeze training horizon, metrics and baseline
+  intervals before evaluating candidate training.
+- Preserve optional torque-supervision and adaptive-gain behavior through real
+  environment targets/control. Their interfaces alone do not satisfy acceptance.
+
+Remaining acceptance work: shared reset/randomization snapshot; matched dynamics
+and replayed task semantics; complete optimizer-update oracle; optional control
+branches; checkpoint-resume equivalence; baseline-derived three-seed Gate F;
+final review, verified report, and repository integration.
+
 - Use the installed Conda environment `isaac-lab` for new work; use `dwbc` only to export legacy reference traces.
 - Pin Isaac Lab 2.3.2 and record exact Isaac Sim/PyTorch/driver versions in `docs/environment-lock.md`.
 - Never modify `../Deep-Whole-Body-Control` during migration.

@@ -50,6 +50,22 @@ def main() -> int:
     try:
         env = WidowGo1Env(cfg)
         env.reset(seed=args.seed)
+        if 'initial_snapshot' in scenario:
+            from initial_snapshot import apply_lab
+            apply_lab(env, PROJECT_ROOT / scenario['initial_snapshot'])
+        args.out.mkdir(parents=True, exist_ok=True)
+        view = env._robot.root_physx_view
+        np.savez_compressed(
+            args.out / 'initial-runtime.npz',
+            contact_offsets=view.get_contact_offsets().cpu().numpy(),
+            rest_offsets=view.get_rest_offsets().cpu().numpy(),
+            masses=view.get_masses().cpu().numpy(),
+            inertias=view.get_inertias().cpu().numpy(),
+            coms=view.get_coms().cpu().numpy(),
+            root_state=_state_wxyz_to_legacy_xyzw(env._robot.data.root_state_w).cpu().numpy(),
+            dof_pos=env._robot.data.joint_pos[:, env._all_joint_ids].cpu().numpy(),
+            dof_vel=env._robot.data.joint_vel[:, env._all_joint_ids].cpu().numpy(),
+        )
         action_path = PROJECT_ROOT / scenario["action_file"]
         action_rows = np.load(action_path)["actions"]
         expected = (int(scenario["steps"]), 18)
@@ -90,6 +106,8 @@ def main() -> int:
         )
         metadata["simulator"] = "Isaac Lab 2.3.2 / Isaac Sim 5.1.0"
         metadata["action_sha256"] = _sha256(action_path)
+        if 'initial_snapshot' in scenario:
+            metadata['initial_snapshot_sha256'] = _sha256(PROJECT_ROOT / scenario['initial_snapshot'])
         metadata["source_sha256"] = {
             str(path.relative_to(PROJECT_ROOT)): _sha256(path)
             for path in (
@@ -100,6 +118,10 @@ def main() -> int:
         }
         (args.out / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
         return 0
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise
     finally:
         if env is not None:
             env.close()

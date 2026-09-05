@@ -54,6 +54,7 @@ def test_importer_preserves_fixed_joint_markers_and_urdf_inertia():
         "joint_drive_target_type": "none",
         "joint_stiffness": 0.0,
         "joint_damping": 0.0,
+        "replace_cylinders_with_capsules": True,
     }
 
 

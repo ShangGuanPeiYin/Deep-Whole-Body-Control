@@ -11,9 +11,11 @@ from isaaclab.sensors import ContactSensor
 from isaaclab.utils import math as math_utils
 
 from .contracts import POLICY_ACTION_NAMES, ROBOT_JOINT_NAMES, validate_joint_names
-from .control import ActionDelayBuffer, compute_pd_torques
-from .goals import cart_to_sphere, sphere_to_cart
-from .observations import build_legacy_observation, compose_proprioception
+from .control import ActionDelayBuffer, compute_pd_torques, compute_osc_torques
+from .commands import sample_commands, sample_box_offsets
+from .goals import cart_to_sphere, sphere_to_cart, goal_collision_mask, orientation_error_xyzw, wxyz_to_xyzw
+from .observations import (build_legacy_observation, compose_proprioception,
+                           build_privileged_observation, relative_joint_positions)
 from .resets import DEFAULT_JOINT_POS, sample_reset_state
 from .rewards import arm_reward, combine_rewards, leg_reward, termination_flags
 from .widow_go1_env_cfg import WidowGo1EnvCfg
@@ -29,6 +31,18 @@ class WidowGo1Env(DirectRLEnv):
 
     def __init__(self, cfg: WidowGo1EnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+        # Collision shapes live in instance proxies, which USD spawn overrides
+        # cannot edit. Set the legacy offsets on the actual PhysX shapes.
+        physics_view = self._robot.root_physx_view
+        shape_ids = torch.arange(self.num_envs, dtype=torch.int32)
+        physics_view.set_contact_offsets(
+            torch.full_like(physics_view.get_contact_offsets(), cfg.robot.spawn.collision_props.contact_offset),
+            shape_ids,
+        )
+        physics_view.set_rest_offsets(
+            torch.full_like(physics_view.get_rest_offsets(), cfg.robot.spawn.collision_props.rest_offset),
+            shape_ids,
+        )
         validate_joint_names(self._robot.joint_names, ROBOT_JOINT_NAMES)
         self._all_joint_ids, resolved = self._robot.find_joints(list(ROBOT_JOINT_NAMES), preserve_order=True)
         if tuple(resolved) != ROBOT_JOINT_NAMES:
@@ -40,10 +54,22 @@ class WidowGo1Env(DirectRLEnv):
         )
         if tuple(feet) != ("FR_foot", "FL_foot", "RR_foot", "RL_foot"):
             raise RuntimeError(f"foot resolution failed: {feet}")
+        self._contact_feet_ids, contact_feet = self._contact_sensor.find_bodies(
+            ["FR_foot", "FL_foot", "RR_foot", "RL_foot"], preserve_order=True)
+        if tuple(contact_feet) != tuple(feet):
+            raise RuntimeError(f"contact sensor foot resolution failed: {contact_feet}")
         ee_ids, ee_names = self._robot.find_bodies("wx250s_ee_gripper_link")
         if len(ee_ids) != 1:
             raise RuntimeError(f"end-effector resolution failed: {ee_names}")
         self._ee_id = ee_ids[0]
+        self._osc_body_ids, _ = self._robot.find_bodies(
+            ["wx250s_" + name + "_link" for name in (
+                "shoulder", "upper_arm", "upper_forearm", "lower_forearm", "wrist",
+                "gripper", "ee_gripper", "left_finger", "right_finger",
+            )], preserve_order=True,
+        )
+        if len(self._osc_body_ids) != 9:
+            raise RuntimeError("OSC gravity compensation requires all nine arm bodies")
         base_ids, _ = self._robot.find_bodies("base")
         self._base_id = base_ids[0]
 
@@ -73,6 +99,12 @@ class WidowGo1Env(DirectRLEnv):
             self.num_envs, generator=generator, device=self.device
         )
         self._goal_generator = generator
+        self._command_generator = torch.Generator(device=self.device).manual_seed(cfg.seed + 102)
+        self._box_offsets = sample_box_offsets(self.num_envs, self._command_generator, self.device)
+        self._curriculum_counter = 0
+        self._lin_range = (0.0, 0.0)
+        self._yaw_range = (0.0, 0.0)
+        self._goal_ranges = ((0.6, 0.6), (torch.pi / 4, torch.pi / 4), (-torch.pi / 6, torch.pi / 6))
         self._episode_sums: dict[str, torch.Tensor] = {}
         self._reset_counter = 0
 
@@ -108,7 +140,8 @@ class WidowGo1Env(DirectRLEnv):
         box_delta = -0.001 + 0.051 * torch.rand(self.num_envs, generator=cpu_generator)
         box_before = box_masses[:, 0].clone()
         box_masses[:, 0] += box_delta
-        box_inertias[:, 0] *= (box_masses[:, 0] / box_before).unsqueeze(-1)
+        # RigidObjectView returns (N,9), unlike ArticulationView's (N,B,9).
+        box_inertias *= (box_masses[:, 0] / box_before).unsqueeze(-1)
         self._box.root_physx_view.set_masses(box_masses, env_ids)
         self._box.root_physx_view.set_inertias(box_inertias, env_ids)
 
@@ -156,6 +189,7 @@ class WidowGo1Env(DirectRLEnv):
         self._raw_actions = torch.clamp(actions, -self.cfg.clip_actions, self.cfg.clip_actions).clone()
         self._last_actions.copy_(self._actions)
         self._actions = self._action_delay.push(self._raw_actions)
+        self._control_substep = 0
 
     def _apply_action(self):
         joint_pos = self._robot.data.joint_pos[:, self._all_joint_ids]
@@ -172,23 +206,51 @@ class WidowGo1Env(DirectRLEnv):
             effort_limits=self._effort_limits,
         )
         self._robot.set_joint_effort_target(self._torques, joint_ids=self._all_joint_ids)
-        if self.cfg.torque_supervision:
-            self.extras["target_arm_torques"] = torch.zeros_like(self._torques[:, 12:18])
+        if self.cfg.torque_supervision and self._control_substep == 0:
+            self.extras["target_arm_torques"] = self._compute_arm_osc_target()
             self.extras["current_arm_dof_pos"] = joint_pos[:, 12:18].clone()
             self.extras["current_arm_dof_vel"] = joint_vel[:, 12:18].clone()
+        self._control_substep += 1
+
+    def _compute_arm_osc_target(self):
+        view = self._robot.root_physx_view
+        root_dofs = 0 if self._robot.is_fixed_base else 6
+        arm_columns = [index + root_dofs for index in self._all_joint_ids[12:18]]
+        jacobians = view.get_jacobians()[..., arm_columns]
+        body_shift = 1 if self._robot.is_fixed_base else 0
+        ee_jacobian = jacobians[:, self._ee_id - body_shift]
+        body_jacobians = jacobians[:, [index - body_shift for index in self._osc_body_ids]]
+        mass = view.get_generalized_mass_matrices()[:, arm_columns, :][:, :, arm_columns]
+        # The original controller uses environment zero's link masses for every
+        # environment, even when gripper mass is randomized. Preserve that rule.
+        masses = view.get_masses()[:1, self._osc_body_ids].to(self.device).expand(self.num_envs, -1)
+        reference = self._robot.data.root_pos_w.clone()
+        reference[:, 2] = 0.53
+        goal = reference + math_utils.quat_apply(
+            math_utils.yaw_quat(self._robot.data.root_quat_w), sphere_to_cart(self._current_ee_goal_sphere)
+        )
+        position_error = goal - self._robot.data.body_pos_w[:, self._ee_id]
+        current = wxyz_to_xyzw(self._robot.data.body_quat_w[:, self._ee_id])
+        current = current / torch.linalg.vector_norm(current, dim=-1, keepdim=True)
+        desired = current.new_tensor([0., 0.7071068, 0., 0.7071068]).expand_as(current)
+        error = torch.cat((position_error, orientation_error_xyzw(desired, current)), dim=-1)
+        kp = current.new_tensor([100., 100., 100., 30., 30., 30.])
+        return compute_osc_torques(
+            mass, ee_jacobian, error, self._robot.data.body_vel_w[:, self._ee_id],
+            kp, 2 * torch.sqrt(kp), body_jacobians, masses,
+        )
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         root_quat = self._robot.data.root_quat_w
         roll, pitch, _ = math_utils.euler_xyz_from_quat(root_quat)
         joint_pos = self._robot.data.joint_pos[:, self._all_joint_ids].clone()
-        joint_pos[:, 12] = torch.remainder(joint_pos[:, 12] + torch.pi, 2 * torch.pi) - torch.pi
         joint_vel = self._robot.data.joint_vel[:, self._all_joint_ids]
         net_forces = self._contact_sensor.data.net_forces_w
-        feet_contacts = (torch.linalg.vector_norm(net_forces[:, self._feet_ids], dim=-1) > 1.5).float()
+        feet_contacts = (torch.linalg.vector_norm(net_forces[:, self._contact_feet_ids], dim=-1) > 1.5).float()
         proprio = compose_proprioception(
             orientation=torch.stack((roll, pitch), dim=-1),
             angular_velocity=self._robot.data.root_ang_vel_b,
-            dof_pos=joint_pos - self._default_joint_pos,
+            dof_pos=relative_joint_positions(joint_pos, self._default_joint_pos),
             dof_vel=joint_vel * 0.05,
             previous_action=self._raw_actions,
             feet_contacts=feet_contacts,
@@ -196,8 +258,8 @@ class WidowGo1Env(DirectRLEnv):
             ee_goal=self._current_ee_goal_sphere,
             ee_orientation_error=self._ee_goal_delta_orientation,
         )
-        privileged = torch.cat(
-            (self._mass_params, self._friction_coefficients, self._motor_strength - 1.0), dim=-1
+        privileged = build_privileged_observation(
+            self._mass_params, self._friction_coefficients, self._motor_strength
         )
         observation = build_legacy_observation(proprio, privileged, self._obs_history)
         fresh = self.episode_length_buf <= 1
@@ -208,7 +270,7 @@ class WidowGo1Env(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         joint_vel = self._robot.data.joint_vel[:, self._all_joint_ids]
-        forces = self._contact_sensor.data.net_forces_w[:, self._feet_ids]
+        forces = self._contact_sensor.data.net_forces_w[:, self._contact_feet_ids]
         leg, leg_terms = leg_reward(
             actions=self._actions,
             torques=self._torques,
@@ -243,6 +305,15 @@ class WidowGo1Env(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self._advance_goals()
+        command_ids = (self.episode_length_buf % 150 == 0).nonzero().flatten()
+        self._commands[command_ids] = sample_commands(
+            len(command_ids), self._command_generator, self.device, self._lin_range, self._yaw_range
+        )
+        if self.common_step_counter % 150 == 0:
+            velocity = self._robot.data.root_vel_w.clone()
+            pushes = torch.rand(self.num_envs, 2, generator=self._command_generator, device=self.device) - 0.5
+            velocity[:, :2] = torch.where((self._commands.sum(-1) == 0)[:, None], pushes * 2.5, pushes)
+            self._robot.write_root_velocity_to_sim(velocity)
         roll, pitch, _ = math_utils.euler_xyz_from_quat(self._robot.data.root_quat_w)
         terminated, reason = termination_flags(
             roll, pitch, self._robot.data.root_pos_w[:, 2], self._current_ee_goal_sphere
@@ -257,11 +328,14 @@ class WidowGo1Env(DirectRLEnv):
         if len(env_ids) == 0:
             return
         self._ee_start_sphere[env_ids] = self._ee_goal_sphere[env_ids]
-        self._ee_goal_sphere[env_ids, 0] = 0.6
-        self._ee_goal_sphere[env_ids, 1] = torch.pi / 4
-        self._ee_goal_sphere[env_ids, 2] = -torch.pi / 6 + torch.pi / 3 * torch.rand(
-            len(env_ids), generator=self._goal_generator, device=self.device
-        )
+        pending = env_ids
+        for _ in range(10):
+            for axis, (lower, upper) in enumerate(self._goal_ranges):
+                self._ee_goal_sphere[pending, axis] = lower + (upper - lower) * torch.rand(
+                    len(pending), generator=self._goal_generator, device=self.device)
+            pending = pending[goal_collision_mask(self._ee_start_sphere[pending], self._ee_goal_sphere[pending])]
+            if len(pending) == 0:
+                break
         self._goal_timer[env_ids] = 0.0
 
     def _advance_goals(self) -> None:
@@ -293,7 +367,7 @@ class WidowGo1Env(DirectRLEnv):
         )
         box_pose = torch.zeros(len(env_ids), 7, device=self.device)
         box_pose[:, 0] = 0.0
-        box_pose[:, 1] = state.root_pose[:, 1] + 0.2
+        box_pose[:, 1] = state.root_pose[:, 1] + self._box_offsets[env_ids]
         box_pose[:, 2] = 0.21
         box_pose[:, 3] = 1.0
         self._box.write_root_pose_to_sim(box_pose, env_ids)
@@ -303,5 +377,22 @@ class WidowGo1Env(DirectRLEnv):
         self._actions[env_ids] = 0.0
         self._last_actions[env_ids] = 0.0
         self._obs_history[env_ids] = 0.0
-        self._commands[env_ids] = 0.0
+        # Legacy falls retain commands; startup and timeouts resample them.
+        if self._reset_counter == 1:
+            command_ids = env_ids
+        else:
+            command_ids = env_ids[self.reset_time_outs[env_ids]]
+        self._commands[command_ids] = sample_commands(
+            len(command_ids), self._command_generator, self.device, self._lin_range, self._yaw_range)
+        self.extras['episode'] = {}
+        for name, values in self._episode_sums.items():
+            self.extras['episode']['rew_' + name] = values[env_ids].mean() / self.cfg.episode_length_s
+            values[env_ids] = 0
         self._sample_goals(env_ids)
+
+    def update_command_curriculum(self):
+        self._curriculum_counter += 1
+        # Frozen legacy schedules are all [0,1], reaching final bounds on update 1.
+        self._lin_range = (0.0, 0.9)
+        self._yaw_range = (-1.0, 1.0)
+        self._goal_ranges = ((0.2, 0.7), (-2 * torch.pi / 5, torch.pi / 5), (-3 * torch.pi / 5, 3 * torch.pi / 5))

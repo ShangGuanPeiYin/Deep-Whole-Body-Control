@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "baseline_status": "pending",
+  "baseline_note": "No legacy training checkpoints or three-seed metrics were supplied. Freeze intervals from real baseline training before evaluating Gate F.",
+  "required_seeds": [1, 2, 3],
+  "runs": [
+    {"seed": 1, "metrics": "artifacts/training/seed-1/metrics.jsonl"},
+    {"seed": 2, "metrics": "artifacts/training/seed-2/metrics.jsonl"},
+    {"seed": 3, "metrics": "artifacts/training/seed-3/metrics.jsonl"}
+  ],
+  "gates": {}
+}

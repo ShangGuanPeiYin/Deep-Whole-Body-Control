@@ -4,7 +4,26 @@ from __future__ import annotations
 
 import torch
 
-from .contracts import ObservationLayout
+from .contracts import ObservationLayout, POLICY_ACTION_NAMES
+
+
+def build_privileged_observation(mass_params, friction, canonical_motor_strength):
+    # Proprioception is reordered by the old task; privileged motor strengths
+    # are deliberately NOT reordered there (FL, FR, RL, RR, arm).
+    legacy_names = (POLICY_ACTION_NAMES[3:6] + POLICY_ACTION_NAMES[:3]
+                    + POLICY_ACTION_NAMES[9:12] + POLICY_ACTION_NAMES[6:9]
+                    + POLICY_ACTION_NAMES[12:])
+    native_order = [POLICY_ACTION_NAMES.index(name) for name in legacy_names]
+    return torch.cat((mass_params, friction, canonical_motor_strength[:, native_order] - 1), -1)
+
+
+def relative_joint_positions(joint_positions, default_positions):
+    positions = joint_positions.clone()
+    positions[:, 12] = torch.remainder(positions[:, 12] + torch.pi, 2 * torch.pi) - torch.pi
+    reference = default_positions.clone()
+    # Legal reset limits do not redefine the legacy observation coordinate zero.
+    reference[18:] = 0
+    return positions - reference
 
 
 PROPRIO_WIDTHS = {

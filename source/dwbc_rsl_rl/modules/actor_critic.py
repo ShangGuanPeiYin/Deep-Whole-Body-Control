@@ -17,7 +17,7 @@ def _activation(name: str) -> nn.Module:
         raise ValueError(f"unsupported activation: {name}") from exc
 
 
-def _mlp(widths: Sequence[int], activation: str, *, final_tanh: bool = False) -> nn.Sequential:
+def _mlp(widths: Sequence[int], activation: str, *, final_tanh: bool = False, final_activation: bool = False) -> nn.Sequential:
     layers: list[nn.Module] = []
     for index, (input_width, output_width) in enumerate(zip(widths, widths[1:])):
         layers.append(nn.Linear(input_width, output_width))
@@ -25,6 +25,8 @@ def _mlp(widths: Sequence[int], activation: str, *, final_tanh: bool = False) ->
             layers.append(_activation(activation))
         elif final_tanh:
             layers.append(nn.Tanh())
+        elif final_activation:
+            layers.append(_activation(activation))
     return nn.Sequential(*layers)
 
 
@@ -62,9 +64,9 @@ class _Actor(nn.Module):
         self.history_len = history_len
         self.adaptive_arm_gains = adaptive_arm_gains
         self.adaptive_arm_gains_scale = adaptive_arm_gains_scale
-        self.priv_encoder = _mlp((num_priv, 64, 20), activation)
+        self.priv_encoder = _mlp((num_priv, 64, 20), activation, final_activation=True)
         self.history_encoder = StateHistoryEncoder(num_proprio, history_len, 20, activation)
-        self.backbone = _mlp((num_proprio + 20, *actor_hidden_dims), activation)
+        self.backbone = _mlp((num_proprio + 20, *actor_hidden_dims), activation, final_activation=True)
         backbone_width = actor_hidden_dims[-1] if actor_hidden_dims else num_proprio + 20
         self.leg_head = _mlp((backbone_width, *head_hidden_dims, 12), activation, final_tanh=True)
         arm_width = 12 if adaptive_arm_gains else 6
@@ -109,7 +111,7 @@ class ActorCritic(nn.Module):
         self.num_arm_actions = 6
         self.actor = _Actor(num_proprio, num_priv, history_len, actor_hidden_dims, head_hidden_dims,
                             activation, adaptive_arm_gains, adaptive_arm_gains_scale)
-        self.critic_backbone = _mlp((num_proprio + num_priv, *critic_hidden_dims), activation)
+        self.critic_backbone = _mlp((num_proprio + num_priv, *critic_hidden_dims), activation, final_activation=True)
         critic_width = critic_hidden_dims[-1] if critic_hidden_dims else num_proprio + num_priv
         self.critic_leg_head = _mlp((critic_width, *head_hidden_dims, 1), activation)
         self.critic_arm_head = _mlp((critic_width, *head_hidden_dims, 1), activation)

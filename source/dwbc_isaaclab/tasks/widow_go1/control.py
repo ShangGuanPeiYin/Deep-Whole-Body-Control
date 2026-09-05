@@ -34,6 +34,32 @@ def wrap_to_pi(angles: torch.Tensor) -> torch.Tensor:
     return torch.remainder(angles + torch.pi, 2.0 * torch.pi) - torch.pi
 
 
+def compute_osc_torques(
+    arm_mass_matrix: torch.Tensor,
+    ee_jacobian: torch.Tensor,
+    pose_error: torch.Tensor,
+    ee_velocity: torch.Tensor,
+    kp: torch.Tensor,
+    kd: torch.Tensor,
+    body_jacobians: torch.Tensor,
+    body_masses: torch.Tensor,
+) -> torch.Tensor:
+    """Legacy six-axis operational-space feedback plus gravity compensation.
+
+    Jacobians and pose/velocity inputs are world-frame, in linear/angular order.
+    Body Jacobians contain only the six actuated arm columns. Preserve pinverse
+    (including singular configurations); do not add damping or clip targets.
+    """
+    mass_inverse = torch.pinverse(arm_mass_matrix)
+    operational_mass = torch.pinverse(ee_jacobian @ mass_inverse @ ee_jacobian.transpose(1, 2))
+    wrench = (kp * pose_error - kd * ee_velocity).unsqueeze(-1)
+    feedback = (ee_jacobian.transpose(1, 2) @ operational_mass @ wrench).squeeze(-1)
+    gravity_wrench = body_jacobians.new_zeros(*body_masses.shape, 6, 1)
+    gravity_wrench[:, :, 2, 0] = body_masses * 9.81
+    gravity = (body_jacobians.transpose(2, 3) @ gravity_wrench).squeeze(-1).sum(dim=1)
+    return feedback + gravity
+
+
 def compute_pd_torques(
     actions: torch.Tensor,
     joint_pos: torch.Tensor,

@@ -38,6 +38,8 @@ def build_asset_report(joints: Iterable[Mapping], bodies: Iterable[Mapping], col
         "effort_limit": {row["name"]: row.get("effort_limit", 0.0) for row in joint_rows},
         "mass": {row["name"]: row.get("mass", 0.0) for row in body_rows},
         "inertia": {row["name"]: row.get("inertia", [0.0, 0.0, 0.0]) for row in body_rows},
+        "inertia_tensor": {row['name']:row['inertia_tensor'] for row in body_rows if 'inertia_tensor' in row},
+        "center_of_mass": {row['name']:row['center_of_mass'] for row in body_rows if 'center_of_mass' in row},
         "collider_count": collider_count,
     }
 
@@ -69,6 +71,10 @@ def compare_asset_report(reference: Mapping, candidate: Mapping, tolerances: Map
     for field, tolerance in tolerances.items():
         reference_values = reference.get(field, {})
         candidate_values = candidate.get(field, {})
+        if not reference_values or not candidate_values:
+            failures.append(f'missing required physics field: {field}')
+        for name in sorted(set(reference_values) ^ set(candidate_values)):
+            failures.append(f'{field}: missing property for {name}')
         for name in sorted(set(reference_values) & set(candidate_values)):
             expected = np.asarray(reference_values[name], dtype=float)
             actual = np.asarray(candidate_values[name], dtype=float)
@@ -81,7 +87,7 @@ def compare_asset_report(reference: Mapping, candidate: Mapping, tolerances: Map
 
 
 def inspect_usd(path: Path) -> dict:
-    from pxr import Usd, UsdPhysics
+    from pxr import Gf, Usd, UsdPhysics
 
     stage = Usd.Stage.Open(str(path.resolve()))
     if stage is None:
@@ -119,10 +125,15 @@ def inspect_usd(path: Path) -> dict:
         if prim.HasAPI(UsdPhysics.RigidBodyAPI):
             mass_api = UsdPhysics.MassAPI.Get(stage, prim.GetPath())
             inertia = mass_api.GetDiagonalInertiaAttr().Get() or (0.0, 0.0, 0.0)
+            axes = mass_api.GetPrincipalAxesAttr().Get()
+            rotation = np.asarray(Gf.Matrix3d(Gf.Quatd(axes))) if axes else np.eye(3)
+            full_inertia = rotation.T @ np.diag(inertia) @ rotation
             bodies.append({
                 "name": canonicalize_body_name(prim.GetName()),
                 "mass": float(mass_api.GetMassAttr().Get() or 0.0),
-                "inertia": [float(value) for value in inertia],
+                "inertia": np.diag(full_inertia).tolist(),
+                "inertia_tensor": full_inertia.tolist(),
+                "center_of_mass": list(mass_api.GetCenterOfMassAttr().Get()),
             })
         if prim.HasAPI(UsdPhysics.CollisionAPI):
             collider_count += 1

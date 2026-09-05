@@ -1,6 +1,7 @@
 import torch
 
 from dwbc_isaaclab.tasks.widow_go1.rewards import arm_reward, combine_rewards, leg_reward, termination_flags
+from dwbc_isaaclab.tasks.widow_go1.goals import sphere_to_cart
 
 
 def test_leg_scalar_keeps_arm_channel():
@@ -36,6 +37,15 @@ def test_arm_reward_preserves_tracking_and_energy_terms():
     )
     assert torch.allclose(value, torch.tensor([0.55 / 100]))
     assert set(terms) == {"tracking_ee_sphere", "arm_energy_abs_sum"}
+
+
+def test_arm_yaw_error_uses_full_legacy_yaw_range():
+    goal = torch.tensor([[0.4, 0.0, 0.0]])
+    actual = sphere_to_cart(torch.tensor([[0.4, 0.0, 0.6 * torch.pi]]))
+    value, _ = arm_reward(ee_position_local=actual, ee_goal_sphere=goal,
+                          torques=torch.zeros(1,20), joint_vel=torch.zeros(1,20))
+    # yaw range is [-3*pi/5, 3*pi/5]; half the full range gives error 0.5.
+    torch.testing.assert_close(value, torch.tensor([0.0055]) * torch.exp(torch.tensor(-0.5)))
 
 
 def test_termination_reason_prioritizes_height_after_tilt_checks():

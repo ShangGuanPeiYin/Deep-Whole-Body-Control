@@ -52,3 +52,13 @@ def sphere_to_cart(spherical: torch.Tensor) -> torch.Tensor:
     return torch.stack(
         (projection * torch.cos(yaw), projection * torch.sin(yaw), radius * torch.sin(elevation)), dim=-1
     )
+
+
+def goal_collision_mask(start, goal):
+    """Original ten-sample spherical path rejection against body box/ground."""
+    t = torch.linspace(0, 1, 10, device=start.device)[None, :, None]
+    cart = sphere_to_cart(torch.lerp(start[:, None], goal[:, None], t))
+    lower = cart.new_tensor((-0.2, -0.15, -0.515))
+    upper = cart.new_tensor((0.3, 0.15, -0.115))
+    inside = ((cart > lower) & (cart < upper)).all(-1).any(-1)
+    return inside | (cart[..., 2] < -0.57).any(-1)

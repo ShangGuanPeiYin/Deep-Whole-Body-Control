@@ -39,7 +39,7 @@ def arm_reward(
     torques: torch.Tensor,
     joint_vel: torch.Tensor,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    sphere_scale = torch.tensor((2.0, 5.0 / (3.0 * torch.pi), 5.0 / (3.0 * torch.pi)), device=torques.device)
+    sphere_scale = torch.tensor((2.0, 5.0 / (3.0 * torch.pi), 5.0 / (6.0 * torch.pi)), device=torques.device)
     tracking_error = torch.sum(torch.abs(cart_to_sphere(ee_position_local) - ee_goal_sphere) * sphere_scale, dim=-1)
     terms = {
         "tracking_ee_sphere": torch.exp(-tracking_error) * 0.55,
