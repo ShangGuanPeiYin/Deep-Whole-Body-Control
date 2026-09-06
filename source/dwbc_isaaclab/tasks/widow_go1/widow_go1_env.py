@@ -10,14 +10,16 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor
 from isaaclab.utils import math as math_utils
 
-from .contracts import POLICY_ACTION_NAMES, ROBOT_JOINT_NAMES, validate_joint_names
+from .contracts import POLICY_ACTION_NAMES, ROBOT_JOINT_NAMES, control_action_dim, validate_joint_names
 from .control import ActionDelayBuffer, compute_pd_torques, compute_osc_torques
 from .commands import sample_commands, sample_box_offsets
 from .goals import cart_to_sphere, sphere_to_cart, goal_collision_mask, orientation_error_xyzw, wxyz_to_xyzw
 from .observations import (build_legacy_observation, compose_proprioception,
                            build_privileged_observation, relative_joint_positions)
+from .physics_contracts import legacy_terrain_collision_offsets
 from .resets import DEFAULT_JOINT_POS, sample_reset_state
 from .rewards import arm_reward, combine_rewards, leg_reward, termination_flags
+from .sensors import net_wrench_local
 from .widow_go1_env_cfg import WidowGo1EnvCfg
 
 
@@ -31,6 +33,12 @@ class WidowGo1Env(DirectRLEnv):
 
     def __init__(self, cfg: WidowGo1EnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+        self._action_dim = control_action_dim(cfg.adaptive_arm_gains)
+        if cfg.action_space != self._action_dim:
+            raise ValueError(
+                f"action_space must be {self._action_dim} when adaptive_arm_gains={cfg.adaptive_arm_gains}, "
+                f"got {cfg.action_space}"
+            )
         # Collision shapes live in instance proxies, which USD spawn overrides
         # cannot edit. Set the legacy offsets on the actual PhysX shapes.
         physics_view = self._robot.root_physx_view
@@ -73,11 +81,12 @@ class WidowGo1Env(DirectRLEnv):
         base_ids, _ = self._robot.find_bodies("base")
         self._base_id = base_ids[0]
 
-        self._action_delay = ActionDelayBuffer(self.num_envs, 18, cfg.action_delay, self.device)
-        self._raw_actions = torch.zeros(self.num_envs, 18, device=self.device)
+        self._action_delay = ActionDelayBuffer(self.num_envs, self._action_dim, cfg.action_delay, self.device)
+        self._raw_actions = torch.zeros(self.num_envs, self._action_dim, device=self.device)
         self._actions = torch.zeros_like(self._raw_actions)
         self._last_actions = torch.zeros_like(self._raw_actions)
         self._torques = torch.zeros(self.num_envs, 20, device=self.device)
+        self._foot_sensor_wrench = torch.zeros(self.num_envs, 4, 6, device=self.device)
         self._default_joint_pos = DEFAULT_JOINT_POS.to(self.device)
         self._action_scale = torch.tensor(cfg.action_scale, device=self.device)
         self._p_gains = torch.tensor(cfg.p_gains, device=self.device)
@@ -167,6 +176,19 @@ class WidowGo1Env(DirectRLEnv):
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+        terrain_offsets = legacy_terrain_collision_offsets()
+        terrain_mesh_path = f"{self.cfg.terrain.prim_path}/terrain/mesh"
+        # ``modify_collision_properties`` is decorated for nested USD prims and
+        # intentionally returns ``None``; correctness is checked by the runtime
+        # trace exporter after PhysX starts.
+        sim_utils.modify_collision_properties(
+            terrain_mesh_path,
+            sim_utils.CollisionPropertiesCfg(
+                contact_offset=terrain_offsets.contact_offset,
+                rest_offset=terrain_offsets.rest_offset,
+            ),
+            stage=self.sim.get_initial_stage(),
+        )
         self.scene.clone_environments(copy_from_source=False)
         if self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
@@ -183,7 +205,7 @@ class WidowGo1Env(DirectRLEnv):
         )
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        expected = (self.num_envs, 18)
+        expected = (self.num_envs, self._action_dim)
         if tuple(actions.shape) != expected:
             raise ValueError(f"expected actions shape {expected}, got {tuple(actions.shape)}")
         self._raw_actions = torch.clamp(actions, -self.cfg.clip_actions, self.cfg.clip_actions).clone()
@@ -245,14 +267,13 @@ class WidowGo1Env(DirectRLEnv):
         roll, pitch, _ = math_utils.euler_xyz_from_quat(root_quat)
         joint_pos = self._robot.data.joint_pos[:, self._all_joint_ids].clone()
         joint_vel = self._robot.data.joint_vel[:, self._all_joint_ids]
-        net_forces = self._contact_sensor.data.net_forces_w
-        feet_contacts = (torch.linalg.vector_norm(net_forces[:, self._contact_feet_ids], dim=-1) > 1.5).float()
+        feet_contacts = (torch.linalg.vector_norm(self._foot_sensor_wrench, dim=-1) > 1.5).float()
         proprio = compose_proprioception(
             orientation=torch.stack((roll, pitch), dim=-1),
             angular_velocity=self._robot.data.root_ang_vel_b,
             dof_pos=relative_joint_positions(joint_pos, self._default_joint_pos),
             dof_vel=joint_vel * 0.05,
-            previous_action=self._raw_actions,
+            previous_action=self._raw_actions[:, :18],
             feet_contacts=feet_contacts,
             command=self._commands,
             ee_goal=self._current_ee_goal_sphere,
@@ -270,15 +291,14 @@ class WidowGo1Env(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         joint_vel = self._robot.data.joint_vel[:, self._all_joint_ids]
-        forces = self._contact_sensor.data.net_forces_w[:, self._contact_feet_ids]
         leg, leg_terms = leg_reward(
-            actions=self._actions,
+            actions=self._actions[:, :18],
             torques=self._torques,
             joint_vel=joint_vel,
             base_lin_vel=self._robot.data.root_lin_vel_b,
             base_ang_vel=self._robot.data.root_ang_vel_b,
             commands=self._commands,
-            foot_force_z=forces[:, :, 2],
+            foot_force_z=self._foot_sensor_wrench[:, :, 2],
         )
         yaw_quaternion = math_utils.yaw_quat(self._robot.data.root_quat_w)
         reference = torch.cat(
@@ -303,7 +323,31 @@ class WidowGo1Env(DirectRLEnv):
             self._episode_sums.setdefault(name, torch.zeros_like(value)).add_(value)
         return reward
 
+    def _update_foot_sensor_wrench(self):
+        """Reconstruct the removed Gym default sensor's net, local six-axis wrench.
+
+        Use native PhysX link accelerations, not differences of published link
+        velocities: those include solver integration effects and are not the
+        same acceleration observable. Cross-version parity remains gated by
+        recorded sensor comparisons, separately from the Newton–Euler contract.
+        """
+        view = self._robot.root_physx_view
+        ids = self._feet_ids
+        quaternion = self._robot.data.body_quat_w[:, ids]
+        acceleration = self._robot.data.body_acc_w[:, ids]
+        linear_local = math_utils.quat_apply_inverse(quaternion, acceleration[..., :3])
+        angular_local = math_utils.quat_apply_inverse(quaternion, acceleration[..., 3:])
+        omega_local = math_utils.quat_apply_inverse(quaternion, self._robot.data.body_ang_vel_w[:, ids])
+        masses = view.get_masses()[:, ids].to(self.device)
+        inertias = view.get_inertias()[:, ids].to(self.device).reshape(self.num_envs, 4, 3, 3)
+        coms = view.get_coms()[:, ids, :3].to(self.device)
+        self._foot_sensor_wrench = net_wrench_local(
+            masses, inertias, linear_local, angular_local, omega_local, coms
+        )
+        self.extras['foot_sensor_wrench'] = self._foot_sensor_wrench.clone()
+
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        self._update_foot_sensor_wrench()
         self._advance_goals()
         command_ids = (self.episode_length_buf % 150 == 0).nonzero().flatten()
         self._commands[command_ids] = sample_commands(

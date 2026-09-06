@@ -6,6 +6,7 @@ from dwbc_isaaclab.tasks.widow_go1.contracts import (
     ROBOT_JOINT_NAMES,
     build_name_index,
     canonicalize_body_name,
+    control_action_dim,
     validate_joint_names,
 )
 
@@ -45,3 +46,8 @@ def test_name_validation_rejects_duplicates_and_missing_names():
 def test_usd_sanitized_arm_body_name_maps_to_legacy_semantics():
     assert canonicalize_body_name("wx250s_ee_gripper_link") == "wx250s/ee_gripper_link"
     assert canonicalize_body_name("FR_foot") == "FR_foot"
+
+
+def test_adaptive_arm_gain_contract_adds_exactly_six_control_only_actions():
+    assert control_action_dim(False) == 18
+    assert control_action_dim(True) == 24

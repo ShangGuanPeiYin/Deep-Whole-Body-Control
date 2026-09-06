@@ -1,0 +1,12 @@
+{
+  "task": "widowGo1",
+  "num_envs": 32,
+  "steps": 40,
+  "sim_device": "cuda:0",
+  "rl_device": "cuda:0",
+  "headless": true,
+  "action_file": "configs/alignment/fixed_actions_v1.npz",
+  "initial_snapshot": "artifacts/legacy/matched-limit-valid/seed-{seed}/initial.npz",
+  "sanitize_state_only_joint_limits": true,
+  "substep_diagnostic": true
+}

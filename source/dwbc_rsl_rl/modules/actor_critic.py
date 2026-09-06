@@ -95,7 +95,7 @@ class _Actor(nn.Module):
 
 
 class ActorCritic(nn.Module):
-    """Dual-value DWBC policy with an always-stable 18-dimensional environment API."""
+    """Dual-value DWBC policy with explicit fixed- and adaptive-gain contracts."""
 
     is_recurrent = False
 
@@ -104,8 +104,13 @@ class ActorCritic(nn.Module):
                  head_hidden_dims=(64,), activation="elu", init_std=1.0,
                  adaptive_arm_gains=False, adaptive_arm_gains_scale=10.0):
         super().__init__()
-        if (num_obs, num_actions, num_proprio, num_priv, history_len) != (860, 18, 76, 24, 10):
-            raise ValueError("DWBC contract is fixed at obs/actions/proprio/priv/history = 860/18/76/24/10")
+        if (num_obs, num_proprio, num_priv, history_len) != (860, 76, 24, 10):
+            raise ValueError("DWBC contract is fixed at obs/proprio/priv/history = 860/76/24/10")
+        expected_actions = 24 if adaptive_arm_gains else 18
+        if num_actions != expected_actions:
+            raise ValueError(
+                f"adaptive_arm_gains={adaptive_arm_gains} requires action width {expected_actions}, got {num_actions}"
+            )
         self.num_actions = num_actions
         self.num_leg_actions = 12
         self.num_arm_actions = 6
@@ -131,7 +136,10 @@ class ActorCritic(nn.Module):
         return self.actor.infer_hist_latent(obs)
 
     def action_mean_and_gains(self, observations, use_history=False):
-        return self.actor(observations, use_history)
+        actions, gains = self.actor(observations, use_history)
+        if self.actor.adaptive_arm_gains:
+            return torch.cat((actions, gains), dim=-1), gains
+        return actions, gains
 
     def evaluate(self, critic_observations, **_):
         features = self.critic_backbone(critic_observations[:, :100])

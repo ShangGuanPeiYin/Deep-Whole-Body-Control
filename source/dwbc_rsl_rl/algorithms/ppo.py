@@ -100,7 +100,9 @@ class PPO:
         self.default_arm_d_gains: torch.Tensor | None = None
         self.default_arm_dof_pos: torch.Tensor | None = None
 
-    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape=(860,), critic_obs_shape=(860,), action_shape=(18,)):
+    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape=(860,), critic_obs_shape=(860,), action_shape=None):
+        if action_shape is None:
+            action_shape = (self.actor_critic.num_actions,)
         self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device)
 
     def act(self, obs, critic_obs, hist_encoding=False):
@@ -116,6 +118,10 @@ class PPO:
     def process_env_step(self, leg_rewards, arm_rewards, dones, infos):
         if self.storage is None:
             raise RuntimeError("init_storage() must be called before collecting transitions")
+        if self.torque_supervision:
+            for key in ('target_arm_torques', 'current_arm_dof_pos', 'current_arm_dof_vel'):
+                if key not in infos:
+                    raise ValueError(f'torque supervision requires {key}')
         rewards = stack_dual_rewards(leg_rewards, arm_rewards)
         if "time_outs" in infos:
             rewards = bootstrap_timeouts(rewards, self.transition.values, infos["time_outs"], self.gamma)

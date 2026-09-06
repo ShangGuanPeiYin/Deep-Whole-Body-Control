@@ -16,6 +16,14 @@ pytest -m "not isaaclab" -v
 python scripts/smoke_env.py --num-envs 1 --steps 40 --headless
 python tools/compare_rollouts.py --legacy artifacts/legacy/smoke/seed-1/trace.npz --candidate artifacts/isaaclab/smoke/seed-1/trace.npz --tolerances configs/alignment/rollout_tolerances.yaml --out artifacts/comparisons/smoke-seed-1.json
 python scripts/train.py --num-envs 32 --max-iterations 1 --seed 1 --headless --run-dir artifacts/smoke
+python scripts/train.py --num-envs 32 --max-iterations 2 --seed 1 --headless --adaptive-arm-gains --run-dir artifacts/adaptive
 ```
 
-The simulation, comparison and training commands become available in the tasks that implement them. Gates A–E must pass before three-seed parity training begins.
+The simulation, comparison and training commands become available in the tasks that implement them. Gates A–E must pass before three-seed parity training begins.  The checked-in
+`configs/alignment/training_calibration_32_envs.yaml` instead defines a short,
+explicitly non-parity three-seed training regression (20 updates / 25,600
+transitions per seed).  It is useful for catching broken training integration;
+it does not replace the legacy 40,000-update Gate F protocol.
+
+The optional adaptive-gain experiment has a separate, explicit 24-dimensional
+action/checkpoint contract; see [docs/adaptive-arm-gains.md](docs/adaptive-arm-gains.md).

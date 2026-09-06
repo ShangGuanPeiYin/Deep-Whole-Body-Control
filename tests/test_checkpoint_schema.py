@@ -78,3 +78,28 @@ def test_runner_executes_dagger_then_ppo_and_saves_loadable_checkpoint(tmp_path:
     resumed.load(path)
     assert resumed.algorithm.counter == runner.algorithm.counter == 2
     assert resumed.algorithm.hist_encoder_optimizer.state_dict()['state']
+
+
+def test_runner_trains_torque_supervision_with_environment_coefficients(tmp_path):
+    class SupervisedAdapter(_FakeAdapter):
+        def arm_default_coefficients(self):
+            return torch.full((6,), 5.), torch.full((6,), .5), torch.zeros(6)
+
+        def step(self, actions):
+            obs, critic, leg, arm, done, infos = super().step(actions)
+            infos.update(target_arm_torques=torch.full((2, 6), 2.),
+                         current_arm_dof_pos=torch.zeros(2, 6),
+                         current_arm_dof_vel=torch.zeros(2, 6))
+            return obs, critic, leg, arm, done, infos
+
+    config = {
+        'policy': {},
+        'algorithm': {'num_learning_epochs': 1, 'num_mini_batches': 1,
+                      'torque_supervision': True, 'torque_supervision_schedule': (.1, 0, 100),
+                      'dagger_update_freq': 2},
+        'runner': {'num_steps_per_env': 2, 'save_interval': 10},
+    }
+    runner = OnPolicyRunner(SupervisedAdapter(), config, tmp_path, device='cpu')
+    metrics, _ = runner.learn(2)
+    assert metrics['torque_loss'] > 0
+    assert metrics['torque_weight'] > 0

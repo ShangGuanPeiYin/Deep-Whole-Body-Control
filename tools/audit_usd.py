@@ -26,10 +26,51 @@ class AssetComparison:
         return not self.failures
 
 
-def build_asset_report(joints: Iterable[Mapping], bodies: Iterable[Mapping], collider_count: int = 0) -> dict:
+def _normalize_colliders(colliders: Iterable[Mapping]) -> dict[str, dict]:
+    """Produce a deterministic, shape-level collision contract.
+
+    A body may contain more than one collision shape of the same type.  The
+    ordinal is therefore part of the key after sorting the shape descriptors,
+    while the descriptor itself remains JSON-only and independent of USD.
+    """
+    normalized: list[dict] = []
+    for collider in colliders:
+        normalized.append(
+            {
+                "body": str(collider["body"]),
+                "shape": str(collider["shape"]).lower(),
+                "local_position": [float(value) for value in collider.get("local_position", ())],
+                "local_rotation": [float(value) for value in collider.get("local_rotation", ())],
+                "dimensions": [float(value) for value in collider.get("dimensions", ())],
+            }
+        )
+    normalized.sort(
+        key=lambda row: (
+            row["body"], row["shape"], row["local_position"], row["local_rotation"], row["dimensions"]
+        )
+    )
+    result: dict[str, dict] = {}
+    duplicates: dict[str, int] = {}
+    for row in normalized:
+        stem = f'{row["body"]}/{row["shape"]}'
+        ordinal = duplicates.get(stem, 0)
+        duplicates[stem] = ordinal + 1
+        result[f"{stem}#{ordinal}"] = {
+            field: row[field] for field in ("local_position", "local_rotation", "dimensions")
+        }
+    return result
+
+
+def build_asset_report(
+    joints: Iterable[Mapping],
+    bodies: Iterable[Mapping],
+    collider_count: int = 0,
+    *,
+    colliders: Iterable[Mapping] | None = None,
+) -> dict:
     joint_rows = sorted(joints, key=lambda row: row["name"])
     body_rows = sorted(bodies, key=lambda row: row["name"])
-    return {
+    report = {
         "joint_names": [row["name"] for row in joint_rows],
         "body_names": [row["name"] for row in body_rows],
         "joint_limits": {row["name"]: row["limits"] for row in joint_rows},
@@ -42,6 +83,10 @@ def build_asset_report(joints: Iterable[Mapping], bodies: Iterable[Mapping], col
         "center_of_mass": {row['name']:row['center_of_mass'] for row in body_rows if 'center_of_mass' in row},
         "collider_count": collider_count,
     }
+    if colliders is not None:
+        report["colliders"] = _normalize_colliders(colliders)
+        report["collider_count"] = len(report["colliders"])
+    return report
 
 
 def normalize_joint_limits(lower: float, upper: float, *, angular: bool) -> list[float]:
@@ -68,9 +113,41 @@ def compare_asset_report(reference: Mapping, candidate: Mapping, tolerances: Map
     candidate_colliders = candidate.get("collider_count")
     if reference_colliders != candidate_colliders:
         failures.append(f"collider_count: expected {reference_colliders}, got {candidate_colliders}")
+    if "collider_geometry" in tolerances:
+        geometry_tolerance = tolerances["collider_geometry"]
+        reference_colliders = reference.get("colliders")
+        candidate_colliders = candidate.get("colliders")
+        if not isinstance(reference_colliders, Mapping) or not isinstance(candidate_colliders, Mapping):
+            failures.append("missing required collider geometry")
+        else:
+            reference_keys = set(reference_colliders)
+            candidate_keys = set(candidate_colliders)
+            failures.extend(f"missing collider: {name}" for name in sorted(reference_keys - candidate_keys))
+            failures.extend(f"unexpected collider: {name}" for name in sorted(candidate_keys - reference_keys))
+            for name in sorted(reference_keys & candidate_keys):
+                display_name = name.rsplit("#", 1)[0]
+                for field in ("local_position", "local_rotation", "dimensions"):
+                    expected = np.asarray(reference_colliders[name].get(field, ()), dtype=float)
+                    actual = np.asarray(candidate_colliders[name].get(field, ()), dtype=float)
+                    if expected.shape != actual.shape or not np.allclose(
+                        actual,
+                        expected,
+                        atol=float(geometry_tolerance["atol"]),
+                        rtol=float(geometry_tolerance["rtol"]),
+                    ):
+                        failures.append(f"collider {field} drift for {display_name}")
     for field, tolerance in tolerances.items():
+        if field == "collider_geometry":
+            continue
         reference_values = reference.get(field, {})
         candidate_values = candidate.get(field, {})
+        body_field = field in {"mass", "inertia", "inertia_tensor", "center_of_mass"}
+        for side, values, names in (
+            ("reference", reference_values, reference_bodies if body_field else reference_names),
+            ("candidate", candidate_values, candidate_bodies if body_field else candidate_names),
+        ):
+            for name in sorted(names - set(values)):
+                failures.append(f'{side} {field}: missing declared entity property for {name}')
         if not reference_values or not candidate_values:
             failures.append(f'missing required physics field: {field}')
         for name in sorted(set(reference_values) ^ set(candidate_values)):
@@ -87,14 +164,14 @@ def compare_asset_report(reference: Mapping, candidate: Mapping, tolerances: Map
 
 
 def inspect_usd(path: Path) -> dict:
-    from pxr import Gf, Usd, UsdPhysics
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
     stage = Usd.Stage.Open(str(path.resolve()))
     if stage is None:
         raise ValueError(f"could not open USD stage: {path}")
     joints = []
     bodies = []
-    collider_count = 0
+    colliders = []
     pending = list(stage.GetPseudoRoot().GetFilteredChildren(Usd.TraverseInstanceProxies()))
     while pending:
         prim = pending.pop()
@@ -136,8 +213,56 @@ def inspect_usd(path: Path) -> dict:
                 "center_of_mass": list(mass_api.GetCenterOfMassAttr().Get()),
             })
         if prim.HasAPI(UsdPhysics.CollisionAPI):
-            collider_count += 1
-    return build_asset_report(joints, bodies, collider_count)
+            matrix = UsdGeom.Xformable(prim).GetLocalTransformation()
+            translation = matrix.ExtractTranslation()
+            rotation = matrix.ExtractRotationQuat()
+            shape_prim = prim
+            if not any(
+                prim.IsA(schema) for schema in (UsdGeom.Sphere, UsdGeom.Capsule, UsdGeom.Cube, UsdGeom.Mesh)
+            ):
+                for descendant in Usd.PrimRange(prim, Usd.TraverseInstanceProxies()):
+                    if any(
+                        descendant.IsA(schema)
+                        for schema in (UsdGeom.Sphere, UsdGeom.Capsule, UsdGeom.Cube, UsdGeom.Mesh)
+                    ):
+                        shape_prim = descendant
+                        break
+            shape = shape_prim.GetTypeName().lower()
+            dimensions: list[float] = []
+            if shape_prim.IsA(UsdGeom.Sphere):
+                dimensions = [float(UsdGeom.Sphere(shape_prim).GetRadiusAttr().Get())]
+            elif shape_prim.IsA(UsdGeom.Capsule):
+                capsule = UsdGeom.Capsule(shape_prim)
+                dimensions = [float(capsule.GetRadiusAttr().Get()), float(capsule.GetHeightAttr().Get())]
+            elif shape_prim.IsA(UsdGeom.Cube):
+                dimensions = [float(UsdGeom.Cube(shape_prim).GetSizeAttr().Get())]
+            elif shape_prim.IsA(UsdGeom.Mesh):
+                mesh = UsdGeom.Mesh(shape_prim)
+                points = np.asarray(mesh.GetPointsAttr().Get(), dtype=float)
+                face_indices = mesh.GetFaceVertexIndicesAttr().Get()
+                dimensions = [
+                    float(len(points)),
+                    float(len(face_indices)),
+                    *np.min(points, axis=0).tolist(),
+                    *np.max(points, axis=0).tolist(),
+                ]
+            collision_container = prim
+            while collision_container.GetName() != "collisions":
+                collision_container = collision_container.GetParent()
+            body = canonicalize_body_name(collision_container.GetParent().GetName())
+            colliders.append(
+                {
+                    "body": body,
+                    "shape": shape,
+                    "local_position": [float(value) for value in translation],
+                    "local_rotation": [
+                        float(rotation.GetReal()),
+                        *[float(value) for value in rotation.GetImaginary()],
+                    ],
+                    "dimensions": dimensions,
+                }
+            )
+    return build_asset_report(joints, bodies, colliders=colliders)
 
 
 def main() -> int:
@@ -156,10 +281,23 @@ def main() -> int:
     if args.usd is not None:
         assert AppLauncher is not None
         launcher = AppLauncher(args)
+        sim = None
         try:
+            # Isaac Sim 5.1 may shut down an app that only opens a detached USD
+            # stage.  Retain a minimal simulation context while auditing.
+            import isaaclab.sim as sim_utils
+            sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(device=args.device))
             report = inspect_usd(args.usd)
             args.out.write_text(json.dumps(report, indent=2) + "\n")
+        except BaseException:
+            # Kit occasionally suppresses Python's default exception hook while
+            # shutting down.  Preserve the actual diagnostic for the gate log.
+            import traceback
+            traceback.print_exc()
+            raise
         finally:
+            if sim is not None:
+                type(sim).clear_instance()
             launcher.app.close()
         return 0
     if not (args.reference and args.candidate and args.tolerances):

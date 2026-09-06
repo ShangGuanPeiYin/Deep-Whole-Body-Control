@@ -72,16 +72,35 @@ def compute_pd_torques(
     d_gains: torch.Tensor,
     effort_limits: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute 18 policy torques in canonical order and append two zero gripper torques."""
+    """Compute canonical PD torques, with an optional six-axis arm-gain branch.
+
+    The stable task contract is 18 position actions.  The repaired research
+    branch has 24 entries: those 18 positions followed by six direct arm-PD
+    stiffness deltas.  The gain actions intentionally bypass motor-strength
+    and action-scale multiplication, matching the original controller's
+    intended adaptive-gain formula.
+    """
     num_envs = actions.shape[0]
-    expected = (num_envs, 18)
-    if tuple(actions.shape) != expected:
-        raise ValueError(f"actions must have shape {expected}, got {tuple(actions.shape)}")
+    expected_prefix = (num_envs,)
+    if tuple(actions.shape[:1]) != expected_prefix or actions.shape[1] not in (18, 24):
+        raise ValueError(f"actions must have shape ({num_envs},18) or ({num_envs},24), got {tuple(actions.shape)}")
+    position_actions = actions[:, :18]
     if tuple(joint_pos.shape) != (num_envs, 20) or tuple(joint_vel.shape) != (num_envs, 20):
         raise ValueError("joint position and velocity must have shape (num_envs, 20)")
     current = joint_pos[:, :18].clone()
-    current[:, 12] = wrap_to_pi(current[:, 12])
-    target = default_joint_pos[:18] + actions * motor_strength * action_scale
+    # Legacy control wraps index -8 of the *18-wide* native vector: native
+    # RR_thigh_joint (canonical index 7), not the waist. Observation wrapping
+    # uses the 20-wide vector and really does wrap the waist. Preserve this
+    # distinction; correcting the legacy controller belongs in a research fork.
+    current[:, 7] = wrap_to_pi(current[:, 7])
+    target = default_joint_pos[:18] + position_actions * motor_strength * action_scale
     policy_torque = p_gains * (target - current) - d_gains * joint_vel[:, :18]
+    if actions.shape[1] == 24:
+        # The legacy formula is defined only for positive stiffness.  Preserve
+        # it on that domain and protect the repaired optional branch from NaNs.
+        arm_p_gains = (p_gains[12:] + actions[:, 18:]).clamp_min(1.0e-6)
+        arm_d_gains = 2.0 * torch.sqrt(arm_p_gains)
+        arm_torque = arm_p_gains * (target[:, 12:] - current[:, 12:]) - arm_d_gains * joint_vel[:, 12:18]
+        policy_torque = torch.cat((policy_torque[:, :12], arm_torque), dim=-1)
     torques = torch.cat((policy_torque, torch.zeros(num_envs, 2, device=actions.device)), dim=-1)
     return torch.clamp(torques, min=-effort_limits, max=effort_limits)

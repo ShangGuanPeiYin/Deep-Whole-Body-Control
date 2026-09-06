@@ -92,7 +92,7 @@ class WidowGo1EnvCfg(DirectRLEnvCfg):
         render_interval=decimation,
         gravity=(0.0, 0.0, -9.81),
         physics_material=sim_utils.RigidBodyMaterialCfg(
-            friction_combine_mode="multiply",
+            friction_combine_mode="average",
             restitution_combine_mode="multiply",
             static_friction=1.0,
             dynamic_friction=1.0,
@@ -131,7 +131,7 @@ class WidowGo1EnvCfg(DirectRLEnvCfg):
         use_terrain_origins=False,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
-            friction_combine_mode="multiply",
+            friction_combine_mode="average",
             restitution_combine_mode="multiply",
             static_friction=1.0,
             dynamic_friction=1.0,
@@ -217,6 +217,8 @@ class WidowGo1EnvCfg(DirectRLEnvCfg):
 
     clip_actions = 100.0
     action_delay = 2
+    adaptive_arm_gains = False
+    adaptive_arm_gains_scale = 10.0
     action_scale = (0.4, 0.45, 0.45) * 4 + (2.1, 0.6, 0.6, 0.0, 0.0, 0.0)
     p_gains = (50.0,) * 12 + (5.0,) * 6
     d_gains = (1.0,) * 12 + (0.5,) * 6

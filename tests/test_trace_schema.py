@@ -36,3 +36,27 @@ def test_legacy_trace_metadata_freezes_order_and_shapes():
     assert metadata["tensor_shapes"]["obs"] == [4, 2, 860]
     assert metadata["action_order"][0] == "FR_hip_joint"
     assert metadata["action_order"][-1] == "widow_wrist_rotate"
+
+
+def test_export_separates_diagnostics_without_dropping_measurements(tmp_path):
+    from tools.export_legacy_trace import write_trace_artifacts
+
+    arrays = _valid_trace()
+    arrays['foot_wrench'] = np.full((4, 2, 4, 6), 3.0)
+    write_trace_artifacts(tmp_path, arrays)
+    with np.load(tmp_path / 'trace.npz') as trace:
+        assert set(trace.files) == set(_valid_trace())
+        np.testing.assert_array_equal(trace['actions'], arrays['actions'])
+    with np.load(tmp_path / 'diagnostics.npz') as diagnostic:
+        assert diagnostic.files == ['foot_wrench']
+        np.testing.assert_array_equal(diagnostic['foot_wrench'], arrays['foot_wrench'])
+
+
+def test_export_rejects_missing_acceptance_field_before_writing(tmp_path):
+    from tools.export_legacy_trace import write_trace_artifacts
+
+    arrays = _valid_trace()
+    del arrays['actions']
+    with pytest.raises(ValueError, match='actions'):
+        write_trace_artifacts(tmp_path, arrays)
+    assert not (tmp_path / 'trace.npz').exists()

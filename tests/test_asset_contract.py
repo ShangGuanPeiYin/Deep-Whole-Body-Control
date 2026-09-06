@@ -41,6 +41,42 @@ def test_asset_report_detects_collider_count_change():
     assert "collider_count: expected 25, got 24" in result.failures
 
 
+def test_asset_report_detects_collider_geometry_drift():
+    reference = build_asset_report(
+        [],
+        [],
+        colliders=[
+            {
+                "body": "FR_foot",
+                "shape": "sphere",
+                "local_position": [0.0, 0.0, 0.0],
+                "dimensions": [0.02],
+            }
+        ],
+    )
+    candidate = build_asset_report(
+        [],
+        [],
+        colliders=[
+            {
+                "body": "FR_foot",
+                "shape": "sphere",
+                "local_position": [0.0, 0.0, 0.0],
+                "dimensions": [0.03],
+            }
+        ],
+    )
+
+    result = compare_asset_report(
+        reference,
+        candidate,
+        {"collider_geometry": {"atol": 1.0e-6, "rtol": 0.0}},
+    )
+
+    assert not result.passed
+    assert any("collider dimensions drift for FR_foot/sphere" in failure for failure in result.failures)
+
+
 def test_unbounded_usd_joint_matches_legacy_zero_limit_sentinel():
     assert normalize_joint_limits(float("-inf"), float("inf"), angular=True) == [0.0, 0.0]
 
@@ -77,3 +113,10 @@ def test_asset_report_orders_names_and_keeps_joint_properties():
     assert report["joint_names"] == ["FR_hip_joint", "widow_elbow"]
     assert report["joint_limits"]["widow_elbow"] == [-1.0, 1.0]
     assert report["body_names"] == ["trunk"]
+
+
+def test_audit_rejects_same_missing_body_property_on_both_sides():
+    report = {"body_names": ["base", "foot"], "mass": {"base": 2.0}}
+    result = compare_asset_report(report, report, {"mass": {"atol": 1e-6, "rtol": 1e-6}})
+    assert not result.passed
+    assert any('foot' in failure and 'mass' in failure for failure in result.failures)

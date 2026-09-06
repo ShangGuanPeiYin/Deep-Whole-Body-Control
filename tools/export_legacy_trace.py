@@ -91,8 +91,21 @@ def record_trace(legacy_root: Path, scenario: dict, seed: int, action_path: Path
     env = make_legacy_env(legacy_root, scenario, seed)
     if 'initial_snapshot' in scenario:
         from initial_snapshot import capture_legacy
-        capture_legacy(env, PROJECT_ROOT / scenario['initial_snapshot'])
+        capture_legacy(env, PROJECT_ROOT / scenario['initial_snapshot'].format(seed=seed),
+                       sanitize_state_only_joint_limits=bool(scenario.get('sanitize_state_only_joint_limits', False)))
     import torch
+    from substep_diagnostics import SubstepRecorder
+    substeps = SubstepRecorder()
+    if scenario.get('substep_diagnostic', False):
+        compute_torques = env._compute_torques
+        def record_control(actions):
+            torque = compute_torques(actions)
+            substeps.record(position=env.ig2raisim(env.dof_pos),
+                            velocity=env.ig2raisim(env.dof_vel),
+                            torque=env.ig2raisim(torque),
+                            applied_torque=env.ig2raisim(torque))
+            return torque
+        env._compute_torques = record_control
     foot_names = ("FR_foot", "FL_foot", "RR_foot", "RL_foot")
     sensor_names = [env.body_names[index] for index in env.feet_indices]
     sensor_order = [sensor_names.index(name) for name in foot_names]
@@ -136,7 +149,23 @@ def record_trace(legacy_root: Path, scenario: dict, seed: int, action_path: Path
             snapshots['foot_state_before_last_substep'] = sensor_diagnostic['before']
         for name, tensor in snapshots.items():
             records[name].append(tensor.detach().cpu().numpy().copy())
-    return {name: np.stack(values) for name, values in records.items()}
+    arrays = {name: np.stack(values) for name, values in records.items()}
+    arrays.update(substeps.arrays())
+    return arrays
+
+
+def write_trace_artifacts(out: Path, arrays: dict[str, np.ndarray]) -> None:
+    """Keep diagnostic measurements separate from the frozen acceptance schema."""
+    from dwbc_isaaclab.tasks.widow_go1.contracts import REQUIRED_TRACE_WIDTHS, REQUIRED_SCALAR_TRACES
+
+    validate_trace_arrays(arrays)
+    required = set(REQUIRED_TRACE_WIDTHS) | set(REQUIRED_SCALAR_TRACES)
+    trace = {name: value for name, value in arrays.items() if name in required}
+    diagnostics = {name: value for name, value in arrays.items() if name not in required}
+    out.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(out / 'trace.npz', **trace)
+    if diagnostics:
+        np.savez_compressed(out / 'diagnostics.npz', **diagnostics)
 
 
 def main() -> int:
@@ -153,9 +182,7 @@ def main() -> int:
     scenario = json.loads(scenario_bytes)
     action_path = Path(scenario["action_file"])
     arrays = record_trace(args.legacy_root, scenario, args.seed, action_path)
-    validate_trace_arrays(arrays)
-    args.out.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(args.out / "trace.npz", **arrays)
+    write_trace_artifacts(args.out, arrays)
     git_sha = subprocess.check_output(
         ["git", "-C", str(args.legacy_root), "rev-parse", "HEAD"], text=True
     ).strip()
@@ -165,7 +192,7 @@ def main() -> int:
     )
     metadata["action_sha256"] = _sha256(action_path)
     if 'initial_snapshot' in scenario:
-        metadata['initial_snapshot_sha256'] = _sha256(PROJECT_ROOT / scenario['initial_snapshot'])
+        metadata['initial_snapshot_sha256'] = _sha256(PROJECT_ROOT / scenario['initial_snapshot'].format(seed=args.seed))
     metadata["source_sha256"] = {
         str(path.relative_to(args.legacy_root)): _sha256(path)
         for path in (

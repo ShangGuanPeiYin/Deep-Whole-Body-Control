@@ -33,10 +33,20 @@ class LegacyRunnerAdapter:
     def device(self):
         return self.env.device
 
+    @property
+    def action_dim(self):
+        return self.env._action_dim
+
     def reset(self):
         observations, infos = self.env.reset()
         obs = policy_observation(observations)
         return obs, obs, infos
+
+    def arm_default_coefficients(self):
+        if not self.env.cfg.torque_supervision:
+            raise ValueError('PPO torque supervision requires environment torque_supervision=True')
+        return (self.env._p_gains[12:18], self.env._d_gains[12:18],
+                self.env._default_joint_pos[12:18])
 
     def update_command_curriculum(self):
         self.env.update_command_curriculum()

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "classification": "training_calibration_not_gate_f",
+  "purpose": "Detect broken training integration across the legacy and Isaac Lab implementations without claiming cross-PhysX policy equivalence.",
+  "num_envs": 32,
+  "steps_per_iteration": 40,
+  "iterations": 20,
+  "transitions_per_seed": 25600,
+  "seeds": [1, 2, 3],
+  "legacy_metrics_root": "artifacts/training-calibration/legacy",
+  "isaaclab_metrics_root": "artifacts/training-calibration/isaaclab",
+  "full_gate_f_requirement": {
+    "iterations": 40000,
+    "transitions_per_seed": 51200000,
+    "status": "blocked_by_strict_cross_physx_gates_b_to_d"
+  }
+}

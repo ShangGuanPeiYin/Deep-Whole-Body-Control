@@ -21,10 +21,26 @@ CONTRACT = {
 }
 
 
-def make_checkpoint(iteration, model_state, optimizer_state, config, infos=None):
+def contract_for_policy(policy_config: dict) -> dict:
+    """Derive the checkpoint contract from an explicit policy action branch."""
+    adaptive = bool(policy_config.get("adaptive_arm_gains", False))
+    action_dim = int(policy_config.get("num_actions", 18))
+    if not adaptive and action_dim == 18:
+        return dict(CONTRACT)
+    if adaptive and action_dim == 24:
+        return {
+            "version": "dwbc-widow-go1-adaptive-gains-v1",
+            "observation_dim": 860,
+            "action_dim": 24,
+            "value_channels": ["leg", "arm"],
+        }
+    raise ValueError(f"invalid DWBC policy action contract: adaptive_arm_gains={adaptive}, action_dim={action_dim}")
+
+
+def make_checkpoint(iteration, model_state, optimizer_state, config, infos=None, *, contract=None):
     return {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
-        "contract": dict(CONTRACT),
+        "contract": dict(CONTRACT if contract is None else contract),
         "iteration": int(iteration),
         "model_state_dict": model_state,
         "optimizer_state_dict": optimizer_state,
@@ -33,11 +49,11 @@ def make_checkpoint(iteration, model_state, optimizer_state, config, infos=None)
     }
 
 
-def load_checkpoint(path: str | Path, map_location="cpu"):
+def load_checkpoint(path: str | Path, map_location="cpu", *, expected_contract=None):
     checkpoint = torch.load(path, map_location=map_location, weights_only=False)
     if checkpoint.get("schema_version") != CHECKPOINT_SCHEMA_VERSION:
         raise ValueError(f"checkpoint schema mismatch: {checkpoint.get('schema_version')}")
-    if checkpoint.get("contract") != CONTRACT:
+    if checkpoint.get("contract") != (CONTRACT if expected_contract is None else expected_contract):
         raise ValueError(f"checkpoint contract mismatch: {checkpoint.get('contract')}")
     for key in ("model_state_dict", "optimizer_state_dict", "iteration"):
         if key not in checkpoint:
@@ -54,7 +70,15 @@ class OnPolicyRunner:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         policy_cfg = config["policy"]
         self.actor_critic = ActorCritic(**policy_cfg).to(self.device)
+        self.contract = contract_for_policy(policy_cfg)
+        env_action_dim = getattr(env, "action_dim", self.actor_critic.num_actions)
+        if env_action_dim != self.actor_critic.num_actions:
+            raise ValueError(
+                f"environment action_dim={env_action_dim} does not match policy action_dim={self.actor_critic.num_actions}"
+            )
         self.algorithm = PPO(self.actor_critic, device=self.device, **config["algorithm"])
+        if self.algorithm.torque_supervision:
+            self.algorithm.set_arm_default_coeffs(*env.arm_default_coefficients())
         runner_cfg = config["runner"]
         self.num_steps_per_env = int(runner_cfg["num_steps_per_env"])
         self.save_interval = int(runner_cfg["save_interval"])
@@ -69,6 +93,7 @@ class OnPolicyRunner:
             self.actor_critic.state_dict(),
             self.algorithm.optimizer.state_dict(),
             self.config,
+            contract=self.contract,
         )
         checkpoint['history_optimizer_state_dict'] = self.algorithm.hist_encoder_optimizer.state_dict()
         checkpoint['algorithm_counter'] = self.algorithm.counter
@@ -79,7 +104,7 @@ class OnPolicyRunner:
         return path
 
     def load(self, path: str | Path, load_optimizer=True):
-        checkpoint = load_checkpoint(path, self.device)
+        checkpoint = load_checkpoint(path, self.device, expected_contract=self.contract)
         self.actor_critic.load_state_dict(checkpoint["model_state_dict"])
         if load_optimizer:
             self.algorithm.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])

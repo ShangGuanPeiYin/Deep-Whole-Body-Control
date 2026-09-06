@@ -5,10 +5,55 @@ from __future__ import annotations
 import numpy as np
 
 
-def capture_legacy(env, path):
+def sanitize_state_only_joint_positions(positions, joint_names, lower, upper, state_only_names):
+    """Clamp only named non-actuated state joints into their declared interval."""
+    result = np.asarray(positions).copy()
+    if result.ndim != 2 or result.shape[1] != len(joint_names):
+        raise ValueError('joint positions must have shape (N, len(joint_names))')
+    lower = np.asarray(lower)
+    upper = np.asarray(upper)
+    if lower.shape != (len(joint_names),) or upper.shape != lower.shape:
+        raise ValueError('joint limit shape does not match joint names')
+    indices = {name: index for index, name in enumerate(joint_names)}
+    missing = set(state_only_names) - set(indices)
+    if missing:
+        raise ValueError(f'state-only joints missing from snapshot: {sorted(missing)}')
+    for name in state_only_names:
+        index = indices[name]
+        result[:, index] = np.clip(result[:, index], lower[index], upper[index])
+    return result
+
+
+def validate_physics_snapshot(snapshot, num_envs):
+    if 'body_names' not in snapshot:
+        raise ValueError('missing physics snapshot field: body_names')
+    bodies = len(snapshot['body_names'])
+    shapes = dict(masses=(num_envs, bodies), inertias=(num_envs, bodies, 9),
+                  coms=(num_envs, bodies, 3), box_masses=(num_envs, 1),
+                  box_inertias=(num_envs, 9), box_coms=(num_envs, 3),
+                  box_materials=(num_envs, 1, 3))
+    for name, shape in shapes.items():
+        if name not in snapshot:
+            raise ValueError(f'missing physics snapshot field: {name}; export a complete snapshot')
+        if snapshot[name].shape != shape or not np.isfinite(snapshot[name]).all():
+            raise ValueError(f'invalid physics snapshot field: {name}; expected finite shape {shape}')
+
+
+def capture_legacy(env, path, *, sanitize_state_only_joint_limits=False):
     import torch
+    from isaacgym import gymtorch
 
     env.reset_idx(torch.arange(env.num_envs, device=env.device), start=True)
+    if sanitize_state_only_joint_limits:
+        dof_properties = env.gym.get_actor_dof_properties(env.envs[0], env.actor_handles[0])
+        position = sanitize_state_only_joint_positions(
+            env.dof_pos.detach().cpu().numpy(), env.dof_names,
+            dof_properties['lower'], dof_properties['upper'],
+            ('widow_left_finger', 'widow_right_finger'),
+        )
+        env.dof_pos.copy_(torch.as_tensor(position, device=env.device))
+        env.gym.set_dof_state_tensor(env.sim, gymtorch.unwrap_tensor(env.dof_state))
+        env.gym.refresh_dof_state_tensor(env.sim)
     fields = {
         'root_state': env.root_states,
         'box_state': env.box_root_state,
@@ -25,7 +70,15 @@ def capture_legacy(env, path):
         'motor_strength': env.ig2raisim_wo_gripper(env.motor_strength),
     }
     arrays = {key: value.detach().cpu().numpy().copy() for key,value in fields.items()}
+    # Root writes happen after the old task's last rigid-state refresh. Refresh
+    # only for this detached diagnostic capture; this does not simulate a step.
+    env.gym.refresh_rigid_body_state_tensor(env.sim)
+    arrays['body_state'] = env.rigid_body_state.detach().cpu().numpy().copy()
     arrays['body_names'] = np.array(env.body_names)
+    dof_properties = env.gym.get_actor_dof_properties(env.envs[0], env.actor_handles[0])
+    arrays['native_joint_names'] = np.array(env.dof_names)
+    for name in dof_properties.dtype.names:
+        arrays['dof_property_' + name] = dof_properties[name].copy()
     masses, inertias, coms = [], [], []
     for handle in env.envs:
         properties = env.gym.get_actor_rigid_body_properties(handle, 0)
@@ -35,6 +88,17 @@ def capture_legacy(env, path):
                           p.inertia.z.x,p.inertia.z.y,p.inertia.z.z] for p in properties])
         coms.append([[p.com.x,p.com.y,p.com.z] for p in properties])
     arrays.update(masses=np.asarray(masses), inertias=np.asarray(inertias), coms=np.asarray(coms))
+    box_masses, box_inertias, box_coms, box_materials = [], [], [], []
+    for handle in env.envs:
+        prop = env.gym.get_actor_rigid_body_properties(handle, 1)[0]
+        box_masses.append([prop.mass])
+        box_inertias.append([getattr(getattr(prop.inertia, a), b) for a in 'xyz' for b in 'xyz'])
+        box_coms.append([prop.com.x, prop.com.y, prop.com.z])
+        material = env.gym.get_actor_rigid_shape_properties(handle, 1)[0]
+        box_materials.append([[material.friction, material.friction, material.restitution]])
+    arrays.update(box_masses=np.asarray(box_masses), box_inertias=np.asarray(box_inertias),
+                  box_coms=np.asarray(box_coms), box_materials=np.asarray(box_materials))
+    validate_physics_snapshot(arrays, env.num_envs)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(path, **arrays)
 
@@ -44,6 +108,7 @@ def apply_lab(env, path):
     from dwbc_isaaclab.tasks.widow_go1.contracts import canonicalize_body_name
 
     with np.load(path) as snapshot:
+        validate_physics_snapshot(snapshot, env.num_envs)
         tensor = lambda key: torch.as_tensor(snapshot[key].copy(), device=env.device, dtype=torch.float32)
         root = tensor('root_state')
         if root.shape != (env.num_envs,13):
@@ -70,6 +135,13 @@ def apply_lab(env, path):
         coms = view.get_coms().clone()
         coms[:,:,:3] = torch.as_tensor(snapshot['coms'][:,order],dtype=torch.float32)
         view.set_coms(coms,ids)
+        box_view = env._box.root_physx_view
+        box_view.set_masses(torch.as_tensor(snapshot['box_masses'], dtype=torch.float32), ids)
+        box_view.set_inertias(torch.as_tensor(snapshot['box_inertias'], dtype=torch.float32), ids)
+        box_coms = box_view.get_coms().clone()
+        box_coms[:, :3] = torch.as_tensor(snapshot['box_coms'], dtype=torch.float32)
+        box_view.set_coms(box_coms, ids)
+        box_view.set_material_properties(torch.as_tensor(snapshot['box_materials'], dtype=torch.float32), ids)
         materials = view.get_material_properties().clone()
         friction = torch.as_tensor(snapshot['friction'],dtype=torch.float32).reshape(env.num_envs,1)
         materials[:,:,0] = friction.clamp_min(0)

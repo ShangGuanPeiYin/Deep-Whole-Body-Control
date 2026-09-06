@@ -19,6 +19,18 @@ ARM_JOINT_NAMES = (
 GRIPPER_JOINT_NAMES = ("widow_left_finger", "widow_right_finger")
 POLICY_ACTION_NAMES = LEG_JOINT_NAMES + ARM_JOINT_NAMES
 ROBOT_JOINT_NAMES = POLICY_ACTION_NAMES + GRIPPER_JOINT_NAMES
+ADAPTIVE_ARM_GAIN_NAMES = tuple(f"{name}_p_gain_delta" for name in ARM_JOINT_NAMES)
+
+
+def control_action_dim(adaptive_arm_gains: bool) -> int:
+    """Return the environment action width for the selected control branch.
+
+    The frozen behavior-cloning and parity protocol always uses the first 18
+    position targets.  An explicitly enabled research branch appends six arm
+    stiffness deltas and therefore has a distinct 24-dimensional policy
+    distribution.
+    """
+    return len(POLICY_ACTION_NAMES) + (len(ADAPTIVE_ARM_GAIN_NAMES) if adaptive_arm_gains else 0)
 
 
 def canonicalize_body_name(name: str) -> str:
