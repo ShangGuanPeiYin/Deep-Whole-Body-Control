@@ -1,5 +1,10 @@
 # Migration verification status — 2026-09-06
 
+**Superseding review:** [acceptance-review.md](acceptance-review.md) corrects
+the solver impossibility claim and unfrozen 40,000-update Gate F interpretation
+below, and restores the omitted outstanding requirements. Historical measurements
+below are retained as evidence, not an all-gates acceptance decision.
+
 Status: INCOMPLETE. Training integration works; physics parity and final
 three-seed research acceptance have not passed.
 

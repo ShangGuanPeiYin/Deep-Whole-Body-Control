@@ -15,7 +15,7 @@ The validated installation is `/home/xxs/research/IsaacLab` at tag `v2.3.2`. Act
 pytest -m "not isaaclab" -v
 python scripts/smoke_env.py --num-envs 1 --steps 40 --headless
 python tools/compare_rollouts.py --legacy artifacts/legacy/smoke/seed-1/trace.npz --candidate artifacts/isaaclab/smoke/seed-1/trace.npz --tolerances configs/alignment/rollout_tolerances.yaml --out artifacts/comparisons/smoke-seed-1.json
-python scripts/train.py --num-envs 32 --max-iterations 1 --seed 1 --headless --run-dir artifacts/smoke
+python scripts/train.py --num-envs 32 --max-iterations 2 --seed 1 --headless --run-dir artifacts/smoke
 python scripts/train.py --num-envs 32 --max-iterations 2 --seed 1 --headless --adaptive-arm-gains --run-dir artifacts/adaptive
 ```
 
@@ -23,7 +23,13 @@ The simulation, comparison and training commands become available in the tasks t
 `configs/alignment/training_calibration_32_envs.yaml` instead defines a short,
 explicitly non-parity three-seed training regression (20 updates / 25,600
 transitions per seed).  It is useful for catching broken training integration;
-it does not replace the legacy 40,000-update Gate F protocol.
+it does not establish full training convergence or satisfy Gate F.
+
+Acceptance is incomplete; see [the current review](docs/reports/acceptance-review.md).
+`--resume` restores the saved training configuration, model, optimizers and
+iteration counter, then starts new simulation episodes. It does not restore
+the complete simulator state. Playback infers the 18/24-action branch from the
+checkpoint automatically.
 
 The optional adaptive-gain experiment has a separate, explicit 24-dimensional
 action/checkpoint contract; see [docs/adaptive-arm-gains.md](docs/adaptive-arm-gains.md).

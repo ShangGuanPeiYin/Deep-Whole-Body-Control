@@ -30,10 +30,17 @@ from dwbc_isaaclab.tasks.widow_go1.agents import dwbc_ppo_config
 from dwbc_isaaclab.tasks.widow_go1.legacy_adapter import LegacyRunnerAdapter
 from dwbc_isaaclab.tasks.widow_go1.widow_go1_env import WidowGo1Env
 from dwbc_isaaclab.tasks.widow_go1.widow_go1_env_cfg import WidowGo1EnvCfg
-from dwbc_rsl_rl.runners import OnPolicyRunner
+from dwbc_rsl_rl.runners import OnPolicyRunner, load_checkpoint
 
 
 def main() -> int:
+    training_config = dwbc_ppo_config(adaptive_arm_gains=args.adaptive_arm_gains)
+    if args.torque_supervision:
+        training_config['algorithm']['torque_supervision'] = True
+        training_config['algorithm']['torque_supervision_schedule'] = (.1, 1000, 1000)
+    if args.resume:
+        training_config = load_checkpoint(args.resume, infer_contract=True)['config']
+        print('RESUME: restores policy and optimizers; simulation episodes restart.')
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -42,17 +49,13 @@ def main() -> int:
     cfg.scene.num_envs = args.num_envs
     cfg.sim.device = args.device
     cfg.terrain.terrain_generator.seed = args.seed
-    cfg.torque_supervision = args.torque_supervision
-    cfg.adaptive_arm_gains = args.adaptive_arm_gains
-    cfg.action_space = 24 if args.adaptive_arm_gains else 18
+    cfg.torque_supervision = training_config['algorithm'].get('torque_supervision', False)
+    cfg.adaptive_arm_gains = training_config['policy'].get('adaptive_arm_gains', False)
+    cfg.action_space = training_config['policy'].get('num_actions', 18)
     env = None
     try:
         env = WidowGo1Env(cfg)
         adapter = LegacyRunnerAdapter(env)
-        training_config = dwbc_ppo_config(adaptive_arm_gains=args.adaptive_arm_gains)
-        if args.torque_supervision:
-            training_config['algorithm']['torque_supervision'] = True
-            training_config['algorithm']['torque_supervision_schedule'] = (.1, 1000, 1000)
         runner = OnPolicyRunner(adapter, training_config, args.run_dir, device=args.device)
         if args.resume:
             runner.load(args.resume)

@@ -65,7 +65,8 @@ def test_network_outputs_logprob_and_gradients_match_legacy():
                 torch.testing.assert_close(a.grad,b.grad,atol=1e-7,rtol=1e-6)
 
 
-def test_full_ppo_update_matches_legacy():
+@pytest.mark.parametrize('history,supervised', [(False, False), (True, False), (False, True)])
+def test_full_ppo_update_matches_legacy(history, supervised):
     from dwbc_rsl_rl.algorithms import PPO
     old,new,pairs,root = matched_models()
     namespace = {'torch':torch,'nn':torch.nn,'optim':torch.optim,'ActorCritic':type(old)}
@@ -74,13 +75,15 @@ def test_full_ppo_update_matches_legacy():
         definition = next(node for node in ast.parse(path.read_text()).body
                           if isinstance(node,ast.ClassDef) and node.name==name)
         exec(compile(ast.Module(body=[definition],type_ignores=[]),str(path),'exec'),namespace)
-    common = dict(torque_supervision=False,num_learning_epochs=1,num_mini_batches=1,
+    common = dict(torque_supervision=supervised,num_learning_epochs=5,num_mini_batches=3,
                   min_policy_std=[0.05]*18,mixing_schedule=[0.5,0,1])
     reference = namespace['PPO'](old,adaptive_arm_gains=False,
                                  priv_reg_coef_schedual=[0.1,0.1,0,1],**common)
     candidate = PPO(new,priv_reg_schedule=[0.1,0.1,0,1],**common)
     for algorithm in (reference,candidate):
         algorithm.init_storage(2,3,[860],[860],[18])
+        if supervised:
+            algorithm.set_arm_default_coeffs(torch.full((6,), 5.), torch.full((6,), .5), torch.zeros(6))
     generator = torch.Generator().manual_seed(73)
     for step in range(3):
         obs = torch.randn(2,860,generator=generator)
@@ -88,17 +91,25 @@ def test_full_ppo_update_matches_legacy():
         done = torch.tensor([step==2,False])
         for algorithm in (reference,candidate):
             torch.manual_seed(step+10)
-            algorithm.act(obs,obs)
-            algorithm.process_env_step(leg,arm,done,{'time_outs':done})
+            algorithm.act(obs,obs,history)
+            infos = {'time_outs':done}
+            if supervised:
+                infos.update(target_arm_torques=torch.ones(2, 6),
+                             current_arm_dof_pos=torch.full((2, 6), .2),
+                             current_arm_dof_vel=torch.full((2, 6), .1))
+            algorithm.process_env_step(leg,arm,done,infos)
     for algorithm in (reference,candidate):
         algorithm.compute_returns(obs)
     torch.testing.assert_close(candidate.storage.returns,reference.storage.returns,atol=1e-7,rtol=1e-6)
     torch.manual_seed(92)
-    expected = reference.update()
+    expected = reference.update_dagger() if history else reference.update()
     torch.manual_seed(92)
-    actual = candidate.update()
-    for index,key in [(0,'value_loss'),(1,'surrogate_loss'),(2,'torque_loss'),(5,'priv_reg_loss')]:
-        assert actual[key] == pytest.approx(expected[index],abs=1e-7,rel=1e-6)
+    actual = candidate.update_dagger() if history else candidate.update()
+    if history:
+        assert actual == pytest.approx(expected, abs=1e-7, rel=1e-6)
+    else:
+        for index,key in [(0,'value_loss'),(1,'surrogate_loss'),(2,'torque_loss'),(5,'priv_reg_loss')]:
+            assert actual[key] == pytest.approx(expected[index],abs=1e-7,rel=1e-6)
     for left,right in pairs:
         for a,b in zip(left.parameters(),right.parameters()):
             torch.testing.assert_close(a,b,atol=1e-7,rtol=1e-6)

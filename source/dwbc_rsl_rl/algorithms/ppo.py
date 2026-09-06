@@ -164,6 +164,8 @@ class PPO:
         if self.default_arm_p_gains is None or self.default_arm_dof_pos is None:
             raise RuntimeError("set_arm_default_coeffs() is required for torque supervision")
         p_gains = self.default_arm_p_gains + gains
+        if self.actor_critic.actor.adaptive_arm_gains:
+            p_gains = p_gains.clamp_min(1e-6)
         d_gains = 2.0 * torch.sqrt(p_gains.clamp_min(1e-6)) if self.actor_critic.actor.adaptive_arm_gains else self.default_arm_d_gains
         return p_gains * (target + self.default_arm_dof_pos - current_pos) - d_gains * current_vel
 

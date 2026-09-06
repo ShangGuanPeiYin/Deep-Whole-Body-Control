@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 from pathlib import Path
 
 import torch
+import numpy as np
 
 from dwbc_rsl_rl.algorithms import PPO
 from dwbc_rsl_rl.modules import ActorCritic
@@ -49,8 +51,10 @@ def make_checkpoint(iteration, model_state, optimizer_state, config, infos=None,
     }
 
 
-def load_checkpoint(path: str | Path, map_location="cpu", *, expected_contract=None):
+def load_checkpoint(path: str | Path, map_location="cpu", *, expected_contract=None, infer_contract=False):
     checkpoint = torch.load(path, map_location=map_location, weights_only=False)
+    if infer_contract:
+        expected_contract = contract_for_policy(checkpoint['config']['policy'])
     if checkpoint.get("schema_version") != CHECKPOINT_SCHEMA_VERSION:
         raise ValueError(f"checkpoint schema mismatch: {checkpoint.get('schema_version')}")
     if checkpoint.get("contract") != (CONTRACT if expected_contract is None else expected_contract):
@@ -84,6 +88,7 @@ class OnPolicyRunner:
         self.save_interval = int(runner_cfg["save_interval"])
         self.current_iteration = 0
         self.metrics_path = self.run_dir / "metrics.jsonl"
+        self._observations = None
         self.algorithm.init_storage(env.num_envs, self.num_steps_per_env)
 
     def save(self, path: str | Path | None = None):
@@ -98,6 +103,9 @@ class OnPolicyRunner:
         checkpoint['history_optimizer_state_dict'] = self.algorithm.hist_encoder_optimizer.state_dict()
         checkpoint['algorithm_counter'] = self.algorithm.counter
         checkpoint['torch_rng_state'] = torch.get_rng_state()
+        checkpoint['python_rng_state'] = random.getstate()
+        checkpoint['numpy_rng_state'] = np.random.get_state()
+        checkpoint['resume_semantics'] = 'optimizer_resume_with_environment_reset'
         if self.device.type == 'cuda':
             checkpoint['cuda_rng_state'] = torch.cuda.get_rng_state(self.device)
         torch.save(checkpoint, path)
@@ -105,6 +113,8 @@ class OnPolicyRunner:
 
     def load(self, path: str | Path, load_optimizer=True):
         checkpoint = load_checkpoint(path, self.device, expected_contract=self.contract)
+        if load_optimizer and checkpoint.get('config') != self.config:
+            raise ValueError('resume config differs from checkpoint; restore its saved training config')
         self.actor_critic.load_state_dict(checkpoint["model_state_dict"])
         if load_optimizer:
             self.algorithm.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -113,13 +123,24 @@ class OnPolicyRunner:
             self.algorithm.hist_encoder_optimizer.load_state_dict(checkpoint['history_optimizer_state_dict'])
             self.algorithm.counter = int(checkpoint['algorithm_counter'])
             torch.set_rng_state(checkpoint['torch_rng_state'].cpu())
+            if 'python_rng_state' in checkpoint:
+                random.setstate(checkpoint['python_rng_state'])
+            if 'numpy_rng_state' in checkpoint:
+                np.random.set_state(checkpoint['numpy_rng_state'])
             if self.device.type == 'cuda' and 'cuda_rng_state' in checkpoint:
                 torch.cuda.set_rng_state(checkpoint['cuda_rng_state'].cpu(),self.device)
         self.current_iteration = int(checkpoint["iteration"])
+        self._observations = None
         return checkpoint.get("infos")
 
     def learn(self, num_learning_iterations: int):
-        obs, critic_obs, _ = self.env.reset()
+        if num_learning_iterations <= 0:
+            raise ValueError('num_learning_iterations must be positive')
+        if self._observations is None:
+            obs, critic_obs, _ = self.env.reset()
+        else:
+            obs, critic_obs = self._observations
+        self.actor_critic.train()
         obs = obs.to(self.device)
         critic_obs = critic_obs.to(self.device)
         last_metrics = {}
@@ -155,6 +176,7 @@ class OnPolicyRunner:
                 losses = self.algorithm.update()
             elapsed = time.perf_counter() - started
             self.current_iteration = iteration + 1
+            self._observations = (obs, critic_obs)
             last_metrics = {
                 "iteration": iteration,
                 "leg_reward": torch.stack(leg_rewards).mean().item(),

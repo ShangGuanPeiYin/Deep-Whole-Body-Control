@@ -24,18 +24,23 @@ from dwbc_isaaclab.tasks.widow_go1.agents import dwbc_ppo_config
 from dwbc_isaaclab.tasks.widow_go1.legacy_adapter import LegacyRunnerAdapter
 from dwbc_isaaclab.tasks.widow_go1.widow_go1_env import WidowGo1Env
 from dwbc_isaaclab.tasks.widow_go1.widow_go1_env_cfg import WidowGo1EnvCfg
-from dwbc_rsl_rl.runners import OnPolicyRunner
+from dwbc_rsl_rl.runners import OnPolicyRunner, load_checkpoint
 
 
 def main() -> int:
+    checkpoint = load_checkpoint(args.checkpoint, infer_contract=True)
+    training_config = checkpoint['config']
     cfg = WidowGo1EnvCfg()
+    cfg.adaptive_arm_gains = training_config['policy'].get('adaptive_arm_gains', False)
+    cfg.action_space = checkpoint['contract']['action_dim']
+    cfg.torque_supervision = training_config['algorithm'].get('torque_supervision', False)
     cfg.scene.num_envs = args.num_envs
     cfg.sim.device = args.device
     env = None
     try:
         env = WidowGo1Env(cfg)
         adapter = LegacyRunnerAdapter(env)
-        runner = OnPolicyRunner(adapter, dwbc_ppo_config(), args.checkpoint.parent, device=args.device)
+        runner = OnPolicyRunner(adapter, training_config, args.checkpoint.parent, device=args.device)
         runner.load(args.checkpoint, load_optimizer=False)
         policy = runner.get_inference_policy(use_history=True)
         obs, _, _ = adapter.reset()
@@ -53,4 +58,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

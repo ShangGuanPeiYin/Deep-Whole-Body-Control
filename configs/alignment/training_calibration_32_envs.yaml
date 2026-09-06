@@ -10,8 +10,8 @@
   "legacy_metrics_root": "artifacts/training-calibration/legacy",
   "isaaclab_metrics_root": "artifacts/training-calibration/isaaclab",
   "full_gate_f_requirement": {
-    "iterations": 40000,
-    "transitions_per_seed": 51200000,
-    "status": "blocked_by_strict_cross_physx_gates_b_to_d"
+    "iterations": null,
+    "transitions_per_seed": null,
+    "status": "budget_and_baseline_intervals_not_frozen; dynamics_acceptance_pending"
   }
 }

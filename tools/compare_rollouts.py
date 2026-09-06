@@ -30,6 +30,8 @@ def compare_field(
         return FieldComparison(name, False, tuple(candidate.shape), float("inf"), float("inf"), float("inf"), 0)
     reference = np.asarray(reference)
     candidate = np.asarray(candidate)
+    if reference.size == 0 or not np.isfinite(reference).all() or not np.isfinite(candidate).all():
+        return FieldComparison(name, False, tuple(candidate.shape), float('inf'), float('inf'), float('inf'), 0)
     difference = np.abs(candidate.astype(float) - reference.astype(float))
     close = np.isclose(candidate, reference, atol=atol, rtol=rtol, equal_nan=False)
     bad = np.argwhere(~close)
@@ -52,7 +54,10 @@ def compare_metadata(reference: Mapping, candidate: Mapping) -> tuple[str, ...]:
         "action_sha256", "action_order", "joint_order", "tensor_shapes",
         "initial_snapshot_sha256",
     )
-    return tuple(f"metadata mismatch: {key}" for key in keys if reference.get(key) != candidate.get(key))
+    failures = [f"missing required metadata: {key}" for key in keys
+                if key != 'initial_snapshot_sha256' and (key not in reference or key not in candidate)]
+    failures.extend(f"metadata mismatch: {key}" for key in keys if reference.get(key) != candidate.get(key))
+    return tuple(failures)
 
 
 def _sha256(path: Path) -> str:

@@ -103,3 +103,41 @@ def test_runner_trains_torque_supervision_with_environment_coefficients(tmp_path
     metrics, _ = runner.learn(2)
     assert metrics['torque_loss'] > 0
     assert metrics['torque_weight'] > 0
+
+
+def test_split_learning_matches_continuous_learning_without_extra_reset(tmp_path):
+    class CountingAdapter(_FakeAdapter):
+        def __init__(self):
+            super().__init__()
+            self.resets = 0
+
+        def reset(self):
+            self.resets += 1
+            return super().reset()
+
+    config = {'policy': {}, 'algorithm': {'torque_supervision': False,
+              'dagger_update_freq': 2},
+              'runner': {'num_steps_per_env': 2, 'save_interval': 10}}
+    torch.manual_seed(71)
+    uninterrupted = OnPolicyRunner(CountingAdapter(), config, tmp_path / 'full', 'cpu')
+    uninterrupted.learn(3)
+    torch.manual_seed(71)
+    split = OnPolicyRunner(CountingAdapter(), config, tmp_path / 'split', 'cpu')
+    split.learn(1)
+    split.learn(2)
+    assert split.env.resets == uninterrupted.env.resets == 1
+    for key, value in uninterrupted.actor_critic.state_dict().items():
+        torch.testing.assert_close(split.actor_critic.state_dict()[key], value, atol=0, rtol=0)
+
+
+def test_resume_rejects_changed_optimizer_configuration(tmp_path):
+    from copy import deepcopy
+    config = {'policy': {}, 'algorithm': {'torque_supervision': False},
+              'runner': {'num_steps_per_env': 2, 'save_interval': 10}}
+    original = OnPolicyRunner(_FakeAdapter(), config, tmp_path / 'original', 'cpu')
+    path = original.save()
+    changed = deepcopy(config)
+    changed['algorithm']['gamma'] = 0.5
+    resumed = OnPolicyRunner(_FakeAdapter(), changed, tmp_path / 'resumed', 'cpu')
+    with pytest.raises(ValueError, match='resume config'):
+        resumed.load(path)
