@@ -26,10 +26,11 @@ transitions per seed).  It is useful for catching broken training integration;
 it does not establish full training convergence or satisfy Gate F.
 
 Acceptance is incomplete; see [the current review](docs/reports/acceptance-review.md).
-`--resume` restores the saved training configuration, model, optimizers and
-iteration counter, then starts new simulation episodes. It does not restore
-the complete simulator state. Playback infers the 18/24-action branch from the
-checkpoint automatically.
+`--resume` restores the saved training configuration, model, optimizers,
+iteration counter, task state and publicly exposed simulator state. PhysX
+does not expose its warm-start/contact caches, so a fresh-process resume is
+usable for continuing an experiment but is not a bitwise replay guarantee.
+Playback infers the 18/24-action branch from the checkpoint automatically.
 
 The optional adaptive-gain experiment has a separate, explicit 24-dimensional
 action/checkpoint contract; see [docs/adaptive-arm-gains.md](docs/adaptive-arm-gains.md).

@@ -141,3 +141,40 @@ def test_resume_rejects_changed_optimizer_configuration(tmp_path):
     resumed = OnPolicyRunner(_FakeAdapter(), changed, tmp_path / 'resumed', 'cpu')
     with pytest.raises(ValueError, match='resume config'):
         resumed.load(path)
+
+
+def test_stateful_checkpoint_resume_matches_uninterrupted_optimizer_updates(tmp_path):
+    class StatefulAdapter(_FakeAdapter):
+        def __init__(self):
+            super().__init__()
+            self.steps = 0
+
+        def step(self, actions):
+            self.steps += 1
+            self.obs = torch.full((2, 860), self.steps / 100.)
+            return super().step(actions)
+
+        def capture_training_state(self):
+            return {'steps': self.steps, 'obs': self.obs.clone()}
+
+        def restore_training_state(self, state):
+            self.steps = state['steps']
+            self.obs = state['obs'].clone()
+
+    config = {'policy': {}, 'algorithm': {'torque_supervision': False, 'dagger_update_freq': 2},
+              'runner': {'num_steps_per_env': 2, 'save_interval': 10}}
+    torch.manual_seed(91)
+    full = OnPolicyRunner(StatefulAdapter(), config, tmp_path / 'full', 'cpu')
+    full.learn(3)
+    torch.manual_seed(91)
+    split = OnPolicyRunner(StatefulAdapter(), config, tmp_path / 'split', 'cpu')
+    _, checkpoint = split.learn(1)
+    saved = load_checkpoint(checkpoint)
+    assert saved['resume_semantics'] == 'public_simulator_and_task_state_not_bitwise_replay'
+    assert saved['environment_state']['steps'] == 2
+    resumed = OnPolicyRunner(StatefulAdapter(), config, tmp_path / 'resumed', 'cpu')
+    resumed.load(checkpoint)
+    resumed.learn(2)
+    assert resumed.env.steps == full.env.steps == 6
+    for key, value in full.actor_critic.state_dict().items():
+        torch.testing.assert_close(resumed.actor_critic.state_dict()[key], value, atol=0, rtol=0)

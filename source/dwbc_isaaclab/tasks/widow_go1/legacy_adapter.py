@@ -42,6 +42,14 @@ class LegacyRunnerAdapter:
         obs = policy_observation(observations)
         return obs, obs, infos
 
+    def capture_training_state(self):
+        from .training_state import capture
+        return capture(self.env)
+
+    def restore_training_state(self, state):
+        from .training_state import restore
+        restore(self.env, state)
+
     def arm_default_coefficients(self):
         if not self.env.cfg.torque_supervision:
             raise ValueError('PPO torque supervision requires environment torque_supervision=True')

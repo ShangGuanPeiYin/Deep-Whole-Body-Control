@@ -106,6 +106,13 @@ class OnPolicyRunner:
         checkpoint['python_rng_state'] = random.getstate()
         checkpoint['numpy_rng_state'] = np.random.get_state()
         checkpoint['resume_semantics'] = 'optimizer_resume_with_environment_reset'
+        if self._observations is not None and hasattr(self.env, 'capture_training_state'):
+            checkpoint['environment_state'] = self.env.capture_training_state()
+            checkpoint['next_observations'] = self._observations
+            # The public PhysX state is enough to continue an experiment, but
+            # PhysX does not expose warm-start/contact caches.  Do not label
+            # this as a bitwise replay guarantee across a fresh process.
+            checkpoint['resume_semantics'] = 'public_simulator_and_task_state_not_bitwise_replay'
         if self.device.type == 'cuda':
             checkpoint['cuda_rng_state'] = torch.cuda.get_rng_state(self.device)
         torch.save(checkpoint, path)
@@ -131,6 +138,11 @@ class OnPolicyRunner:
                 torch.cuda.set_rng_state(checkpoint['cuda_rng_state'].cpu(),self.device)
         self.current_iteration = int(checkpoint["iteration"])
         self._observations = None
+        if load_optimizer and 'environment_state' in checkpoint:
+            if not hasattr(self.env, 'restore_training_state'):
+                raise ValueError('environment does not support stateful resume')
+            self.env.restore_training_state(checkpoint['environment_state'])
+            self._observations = tuple(item.to(self.device) for item in checkpoint['next_observations'])
         return checkpoint.get("infos")
 
     def learn(self, num_learning_iterations: int):

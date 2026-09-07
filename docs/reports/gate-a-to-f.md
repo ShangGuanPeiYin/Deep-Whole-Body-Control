@@ -63,8 +63,9 @@ evidence for the current implementation. The CPU suite was rerun: 53 passed.
   reward normalization and separate sensor body-name resolution.
 - Added command curriculum/resampling, pushes, box random offsets, goal path
   rejection, and episode reward logging.
-- Added history optimizer, algorithm counter and Torch RNG checkpoint state;
-  exact simulator-state resume remains pending.
+- Added history optimizer, algorithm counter and RNG checkpoint state. The
+  current checkpoint also restores public scene/task state; exact cross-process
+  contact replay remains unavailable because PhysX does not expose solver caches.
 - Removed unsupported Gate F intervals. `training_seeds.yaml` fails closed until
   real baseline training produces predeclared intervals.
 - Restored complete OSC targets and first-substep supervision snapshots. The
@@ -191,7 +192,9 @@ present an unverified solver-flag change as a fix.
    strict state-trajectory PASS requires an upstream-compatible solver or a
    different simulator-agnostic acceptance criterion; it must not be obtained
    by loosening the frozen tolerances.
-2. Sensor equivalence and exact simulator-state resume have not been proved.
+2. Sensor equivalence has not been proved. Public-state continuation is
+   implemented and read-back-validated, but exact fresh-process simulator replay
+   is not possible with the exposed PhysX state because solver caches are absent.
 3. Gate F remains intentionally pending.  Its legacy configuration requires
    40,000 updates × 32 environments × 40 steps = 51,200,000 transitions per
    seed (153,600,000 across seeds 1/2/3), and the Gate F precondition B–E is

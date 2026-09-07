@@ -39,8 +39,14 @@ def main() -> int:
         training_config['algorithm']['torque_supervision'] = True
         training_config['algorithm']['torque_supervision_schedule'] = (.1, 1000, 1000)
     if args.resume:
-        training_config = load_checkpoint(args.resume, infer_contract=True)['config']
-        print('RESUME: restores policy and optimizers; simulation episodes restart.')
+        resumed_checkpoint = load_checkpoint(args.resume, infer_contract=True)
+        training_config = resumed_checkpoint['config']
+        if 'environment_state' in resumed_checkpoint:
+            args.seed = resumed_checkpoint['environment_state']['seed']
+            args.num_envs = resumed_checkpoint['environment_state']['num_envs']
+            print('RESUME: restores public simulator and task state; internal PhysX caches are not serialized, so this is not bitwise replay.')
+        else:
+            print('RESUME: older checkpoint has no environment state; simulation episodes restart.')
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)

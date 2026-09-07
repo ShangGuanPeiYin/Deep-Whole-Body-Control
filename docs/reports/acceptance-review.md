@@ -1,4 +1,4 @@
-# Acceptance review — 2026-09-06
+# Acceptance review — 2026-09-07
 
 Overall: INCOMPLETE. This review supersedes earlier claims that remaining
 physics differences are proven irreducible or that repository integration
@@ -18,6 +18,15 @@ constitutes final acceptance.
 - Repeated `learn()` calls restarted episodes. The runner now retains the next
   observations; an exact-parameter regression compares split and continuous
   learning through both DAgger and PPO.
+- Checkpoints now contain the public scene state, randomized masses/inertias/
+  COM/material properties, task histories, action-delay buffer, generators,
+  reward accumulators, reset/curriculum counters, next observations and RNG
+  states. A fresh 32-environment GPU checkpoint (seed 17) restored and trained
+  its next update successfully. This is intentionally labelled a *public-state
+  continuation*, not an exact replay: PhysX does not serialize internal contact
+  warm-start caches. In the recorded four-update experiment, fresh-process
+  resume versus uninterrupted training differed in 40/41 parameter tensors
+  (maximum absolute difference `0.01187832`).
 - Adaptive torque supervision allowed negative proportional gain while actual
   control clamps it. Both now apply the same positive lower bound.
 - The rollout comparator could pass identical infinities, empty arrays, or
@@ -48,10 +57,10 @@ worktree's `artifacts/{legacy,isaaclab}/matched-limit-valid/seed-1`.
 2. Native-acceleration wrench reconstruction has not matched the old sensor.
    It supplies observations and rewards, so this remains an implementation
    acceptance issue even though pure reward formulas pass same-state tests.
-3. Resume is explicitly optimizer resume with new simulation episodes. The
-   checkpoint does not include task histories, delay buffers, goals, local
-   generators, randomized body properties or simulator state. Exact stateful
-   resume is not implemented or accepted.
+3. Public-state continuation is implemented and read-back-validated, but exact
+   fresh-process replay is not accepted: PhysX internal solver/contact caches
+   are not available through the public API. The saved resume semantics state
+   this limitation explicitly.
 4. Full learning quality has not been evaluated. Six 20-update runs establish
    execution, not convergence. The original legacy config specifies 512
    environments and 40,000 updates, but the migration plan never froze a Gate F
